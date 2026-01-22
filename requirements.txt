@@ -1,0 +1,5 @@
+# Gemini-SIP Gateway Dependencies
+# Python Version: 3.11.4
+websockets==14.0
+requests==2.32.5
+# audioop is built-in for Python 3.11
