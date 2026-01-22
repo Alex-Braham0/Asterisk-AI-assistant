@@ -1,17 +1,23 @@
 import socket, struct, time, threading, json, asyncio, base64, websockets, traceback, requests, audioop, ctypes, wave, collections
 from contextlib import suppress
 
-# --- MODULE 1: CONFIGURATION ---
+# --- MODULE 1: CONFIG LOADER ---
 class Config:
-    def __init__(self, pbx_ip, my_ip, keys):
-        self.pbx_ip = pbx_ip
-        self.my_ip = my_ip
-        self.auth = ("alexpc", keys.get('freepbx-pass'))
-        self.gemini_key = keys.get('gemini-key')
-        self.app_name = "my_audio_app"
-        self.model = "models/gemini-2.5-flash-native-audio-preview-12-2025"
-        self.base_url = f"http://{pbx_ip}:8088/ari"
-        self.default_prompt = "You are a helpful phone assistant. Keep responses concise."
+    def __init__(self, data):
+        # Credentials & Network
+        self.pbx_ip = data.get('pbx-ip')
+        self.my_ip = data.get('my-ip')
+        self.auth = ("alexpc", data.get('freepbx-pass'))
+        self.gemini_key = data.get('gemini-key')
+        
+        # Application Identity (from JSON)
+        self.app_name = data.get('app_name', 'my_audio_app')
+        self.model = data.get('model', 'models/gemini-2.5-flash-native-audio-preview-12-2025')
+        self.default_prompt = data.get('default_prompt', 'Assistant prompt.')
+        
+        # System Paths
+        self.base_url = f"http://{self.pbx_ip}:8088/ari"
+        self.current_active_chan = None
 
 # --- MODULE 2: AUDIO ENGINE ---
 class AudioEngine:
@@ -22,7 +28,6 @@ class AudioEngine:
         self.from_gemini = collections.deque()
         self.lock = threading.Lock()
         self.is_speaking = False
-        self.last_interrupt_t = 0
 
     def process_inbound(self, data_8k_be, loop):
         le_8k = audioop.byteswap(data_8k_be, 2)
@@ -50,6 +55,7 @@ class GeminiInterface:
         self.system_instruction = system_instruction or config.default_prompt
 
     async def run(self, ws):
+        # V2.5-flash-native Setup
         setup = {
             "setup": {
                 "model": self.cfg.model,
@@ -73,6 +79,7 @@ class GeminiInterface:
             if "serverContent" in resp:
                 content = resp["serverContent"]
                 
+                # Interrupt logic
                 if content.get("interrupted") and self.engine.is_speaking:
                     self.engine.clear()
                     continue
@@ -132,50 +139,66 @@ class GeminiGateway:
         self.state = {'active': False, 'chan_id': None}
 
     async def handle_call(self, c_id, c_name, caller_num, loop):
+        # 1. Check if Busy (Concurrent Call rejection)
         if self.call_lock.locked():
-            print(f"[!] REJECTED: Busy with another call."); requests.delete(f"{self.cfg.base_url}/channels/{c_id}", auth=self.cfg.auth); return
+            print(f"[!] REJECTED: Busy with active call.")
+            requests.delete(f"{self.cfg.base_url}/channels/{c_id}", auth=self.cfg.auth)
+            return
         
         async with self.call_lock:
-            print(f"\n[1] CALL STARTED: {c_name} (From: {caller_num})")
+            print(f"\n[1] CALL DETECTED: {c_name} (From: {caller_num})")
             self.state.update({'active': True, 'chan_id': c_id})
             engine = AudioEngine()
-            ai = GeminiInterface(self.cfg, engine)
+            
+            # Use dynamic prompt based on caller ID if desired
+            custom_prompt = self.cfg.default_prompt
+            ai = GeminiInterface(self.cfg, engine, system_instruction=custom_prompt)
             
             m_out_id, m_in_id, snoop_id = None, None, None
             
             try:
+                # 2. Gatekeeper: Only Answer if Gemini connects and has quota
                 async with websockets.connect(ai.uri) as ws:
                     asyncio.create_task(ai.run(ws))
+                    # Wait for setupComplete (Handshake)
                     await asyncio.wait_for(ai.ready_event.wait(), 15)
-                    print("[2] READY. Answering.")
+                    
+                    print("[2] GEMINI READY. Answering Phone.")
                     requests.post(f"{self.cfg.base_url}/channels/{c_id}/answer", auth=self.cfg.auth)
                     
+                    # 3. Media Channel Creation
                     m_out = requests.post(f"{self.cfg.base_url}/channels/externalMedia", auth=self.cfg.auth, params={"app": self.cfg.app_name, "external_host": f"{self.cfg.my_ip}:12345", "format": "slin"}).json()
                     m_in = requests.post(f"{self.cfg.base_url}/channels/externalMedia", auth=self.cfg.auth, params={"app": self.cfg.app_name, "external_host": f"{self.cfg.my_ip}:12346", "format": "slin"}).json()
                     m_out_id, m_in_id = m_out['id'], m_in['id']
                     
+                    # Bridges
                     requests.post(f"{self.cfg.base_url}/bridges/b1", auth=self.cfg.auth, params={"type": "mixing"})
                     requests.post(f"{self.cfg.base_url}/bridges/b1/addChannel", auth=self.cfg.auth, params={"channel": f"{m_out_id},{c_id}"})
-                    
                     snoop = requests.post(f"{self.cfg.base_url}/channels/{c_id}/snoop", auth=self.cfg.auth, params={"app": self.cfg.app_name, "spy": "in"}).json()
                     snoop_id = snoop['id']
                     requests.post(f"{self.cfg.base_url}/bridges/b2", auth=self.cfg.auth, params={"type": "mixing"})
                     requests.post(f"{self.cfg.base_url}/bridges/b2/addChannel", auth=self.cfg.auth, params={"channel": f"{snoop_id},{m_in_id}"})
 
+                    # 4. Start Real-time threads
                     threading.Thread(target=MediaWorker.rtp_in, args=(12346, self.state, engine, loop)).start()
                     threading.Thread(target=MediaWorker.rtp_out, args=(self.cfg.pbx_ip, int(m_out['channelvars']['UNICASTRTP_LOCAL_PORT']), self.state, engine)).start()
                     
                     while self.state['active']: await asyncio.sleep(0.5)
 
+                # 5. Graceful completion wait
                 if engine.is_speaking:
-                    print("[*] CLEANUP: Waiting for Gemini to finish response...")
-                    wait_start = time.time()
-                    while engine.is_speaking and (time.time() - wait_start < 5.0):
+                    print("[*] CLEANUP: Waiting for AI response turn to complete...")
+                    start_wait = time.time()
+                    while engine.is_speaking and (time.time() - start_wait < 5.0):
                         await asyncio.sleep(0.1)
 
-            except: traceback.print_exc()
+            except websockets.exceptions.ConnectionClosedError as e:
+                print(f"[!] GEMINI CONNECTION ERROR (Possible Quota): {e}")
+            except Exception:
+                traceback.print_exc()
             finally:
-                print("[*] CLEANUP: Removing Channels...")
+                print("[*] CLEANUP: Removing ARI resources.")
+                self.state['active'] = False
                 engine.clear()
                 for cid in [m_out_id, m_in_id, snoop_id, c_id]:
                     if cid: 
@@ -183,8 +206,7 @@ class GeminiGateway:
                 print("[+] CALL COMPLETE.")
 
     def run(self):
-        try:
-            ctypes.WinDLL('winmm').timeBeginPeriod(1)
+        try: ctypes.WinDLL('winmm').timeBeginPeriod(1)
         except: pass
         
         loop = asyncio.new_event_loop()
@@ -205,11 +227,12 @@ class GeminiGateway:
                     self.state['active'] = False
 
         import websocket as ws_lib
+        # ARI WebSocket Auth
         url = f"ws://{self.cfg.pbx_ip}:8088/ari/events?app={self.cfg.app_name}&api_key={self.cfg.auth[0]}:{self.cfg.auth[1]}"
         threading.Thread(target=ws_lib.WebSocketApp(url, on_message=on_msg).run_forever, daemon=True).start()
-        print(f"[*] READY: Listening for '{self.cfg.app_name}'"); loop.run_forever()
+        print(f"[*] READY: Listening for '{self.cfg.app_name}' on ARI."); loop.run_forever()
 
 if __name__ == "__main__":
-    with open('keys.json') as f: keys = json.load(f)
-    cfg = Config("192.168.1.200", "192.168.1.10", keys)
+    with open('config.json') as f: config_data = json.load(f)
+    cfg = Config(config_data)
     GeminiGateway(cfg).run()
