@@ -130,13 +130,19 @@ class GeminiClient:
                                     pcm_api = base64.b64decode(b64_audio)
                                     buffer_24k.extend(pcm_api)
                                     
-                    while len(buffer_24k) >= 9600:
-                        large_chunk_24k = bytes(buffer_24k[:9600])
-                        del buffer_24k[:9600]
+                    # Wait for 50ms of audio (2400 bytes) instead of 200ms
+                    while len(buffer_24k) >= 2400:
+                        large_chunk_24k = bytes(buffer_24k[:2400])
+                        del buffer_24k[:2400]
                         
                         audio_24k = np.frombuffer(large_chunk_24k, dtype=np.int16)
                         audio_24k = np.clip(audio_24k * 0.8, -32768, 32767).astype(np.int16)
-                        audio_8k = audio_24k[::3]
+                        
+                        # Anti-aliasing: Boxcar filter (average of every 3 samples)
+                        # Reshaping into groups of 3 and taking the mean acts as a low-pass filter
+                        # before downsampling, preventing metallic/robotic aliasing artifacts.
+                        audio_8k = audio_24k.reshape(-1, 3).mean(axis=1).astype(np.int16)
+
                         self.pbx_inject_callback(audio_8k.tobytes())
                         
                 # 2. Handle TOOL CALLS
@@ -204,3 +210,17 @@ class GeminiClient:
         except Exception as e:
             self._log(f"[Gemini] Failed to send summary request: {e}")
             self.is_connected = False
+
+    async def send_system_event(self, text_event):
+        """Injects a text command into the live audio stream to guide AI behavior."""
+        msg = {
+            "clientContent": {
+                "turns": [{"role": "user", "parts": [{"text": f"SYSTEM EVENT: {text_event}"}]}],
+                "turnComplete": True
+            }
+        }
+        try:
+            await self.ws.send(json.dumps(msg))
+            self._log(f"[Gemini] Injected System Event: {text_event}")
+        except Exception as e:
+            self._log(f"[Gemini] Failed to send System Event: {e}")

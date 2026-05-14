@@ -4,13 +4,14 @@ from pyVoIP.VoIP import VoIPPhone, CallState, InvalidStateError
 import numpy as np
 
 class MediaEngine:
-    def __init__(self, sip_ip, sip_port, username, password, on_call_callback):
+    def __init__(self, sip_ip, sip_port, username, password, on_call_callback, my_ip):
         self.username = username
         self.on_call_callback = on_call_callback
         
         self.phone = VoIPPhone(
             sip_ip, sip_port, username, password, 
-            callCallback=self._internal_incoming_call_handler
+            callCallback=self._internal_incoming_call_handler,
+            myIP=my_ip
         )
         
         self.active_call = None
@@ -43,6 +44,35 @@ class MediaEngine:
             call.deny()
             return
         self.on_call_callback(call)
+
+    def make_outbound_call(self, target_extension):
+        """Initiates an outbound SIP invite."""
+        if self.active_call is not None:
+            print("[MediaEngine] Cannot dial out, line is busy.")
+            return None
+        
+        try:
+            # pyVoIP's native outbound dialing method
+            outbound_call = self.phone.call(target_extension)
+            self.active_call = outbound_call
+            return outbound_call
+        except Exception as e:
+            print(f"[MediaEngine] Failed to initiate outbound call: {e}")
+            return None
+
+    def engage_outbound_media(self):
+        """Starts the RTP heartbeat for an answered outbound call."""
+        if not self.active_call or self.active_call.state.name != "ANSWERED":
+            return False
+            
+        print(f"[MediaEngine] Outbound call connected. Engaging RTP Sync.")
+        with self.pbx_to_ai_queue.mutex: self.pbx_to_ai_queue.queue.clear()
+        with self.tx_lock: self.tx_buffer.clear()
+        
+        self._is_running = True
+        self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self.heartbeat_thread.start()
+        return True
 
     def answer_call(self, call):
         """Answers the call and starts the synchronized RTP heartbeat loop."""
@@ -103,7 +133,8 @@ class MediaEngine:
                     self.pbx_to_ai_queue.put_nowait(rx_pcm_16)
                 except queue.Full:
                     pass 
-            except Exception:
+            except Exception as e:
+                print(f"[MediaEngine] CRITICAL RX EXCEPTION: {repr(e)}")
                 break
 
             # --- TX PHASE: AI to PBX ---

@@ -1,6 +1,14 @@
 # Configuration
 config.json
 
+# Databases and Storage
+pbx_core.db
+chroma_data/
+seed_test_db.py
+
+# Debug and Audio Dumps
+*.raw
+
 # Python Virtual Environments
 venv/
 .venv/

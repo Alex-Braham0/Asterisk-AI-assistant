@@ -3,6 +3,9 @@ import sys
 import json
 from pbx_vocal import MediaEngine
 from call_session import CallSession
+from database_manager import DatabaseManager
+from sync_pbx import PBXSynchronizer
+import datetime
 
 class SIPAgentOrchestrator:
     def __init__(self, config_path="config.json"):
@@ -22,6 +25,11 @@ class SIPAgentOrchestrator:
                 }, f, indent=4)
             sys.exit(1)
 
+        self.db_manager = DatabaseManager()
+
+        synchronizer = PBXSynchronizer(self.config, self.db_manager)
+        synchronizer.run_sync()
+
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
 
@@ -31,13 +39,17 @@ class SIPAgentOrchestrator:
             self.config["sip_port"], 
             self.config["username"], 
             self.config["password"],
-            on_call_callback=self._handle_ringing_call
+            on_call_callback=self._handle_ringing_call,
+            my_ip=self.config["my_ip"],
         )
 
     def start(self):
         self.engine.start()
         print("\n--- SIP Agent Online ---")
         print("Waiting for calls...")
+
+        # Start the background worker alongside the main event loop
+        self.loop.create_task(self._background_task_worker())
         
         try:
             self.loop.run_forever()
@@ -46,15 +58,112 @@ class SIPAgentOrchestrator:
             self.engine.stop()
             self.loop.stop()
 
+    async def _background_task_worker(self):
+        """Proactive loop monitoring the database for scheduled tasks."""
+        print("[Worker] Background task loop engaged.")
+        while True:
+            try:
+                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                # Fetch ONE pending task whose time has come
+                cursor = self.db_manager.sql_conn.cursor()
+                cursor.execute('''
+                    SELECT id, task_type, payload 
+                    FROM Tasks 
+                    WHERE status = 'pending' AND scheduled_time <= ?
+                    ORDER BY scheduled_time ASC LIMIT 1
+                ''', (now,))
+                
+                task = cursor.fetchone()
+                
+                if task:
+                    task_id, task_type, payload_str = task['id'], task['task_type'], task['payload']
+                    payload = json.loads(payload_str)
+                    
+                    # Mark as processing to prevent double-execution
+                    cursor.execute("UPDATE Tasks SET status = 'processing' WHERE id = ?", (task_id,))
+                    self.db_manager.sql_conn.commit()
+                    
+                    print(f"[Worker] Executing Task {task_id}: {task_type}")
+                    
+                    # Route the task
+                    if task_type == "outbound_call":
+                        await self._initiate_outbound_call(payload['target_extension'], payload['context'])
+                    elif task_type == "process_summary":
+                        # Hand the summary off to an LLM or vector DB
+                        pass 
+                        
+                    # Mark completed
+                    cursor.execute("UPDATE Tasks SET status = 'completed' WHERE id = ?", (task_id,))
+                    self.db_manager.sql_conn.commit()
+                    
+            except Exception as e:
+                print(f"[Worker Error] {e}")
+                
+            # Sleep before checking again (prevents CPU thrashing)
+            await asyncio.sleep(5)
+
     def _handle_ringing_call(self, call):
-        """Callback triggered by pyVoIP when an incoming call is detected."""
+        """Safely delegates inbound ringing to an async task."""
         print(f"\n[App] Call ringing from {call.request.headers['From']['caller']}...")
+        asyncio.run_coroutine_threadsafe(self._process_inbound_call(call), self.loop)
+
+    async def _process_inbound_call(self, call):
+        """Connects the AI before picking up the receiver."""
+        session = CallSession(call, self.engine, self.config, self.db_manager)
+        connected = await session.setup_connection(direction="inbound")
         
-        # Instantiate a new session state machine for this caller
-        session = CallSession(call, self.engine, self.config)
+        if connected:
+            await session.run_bridge()
+        else:
+            try: call.deny() 
+            except: pass
+
+    async def _initiate_outbound_call(self, target_extension, context):
+        """Initializes AI completely, then dials the SIP line."""
+        print(f"[Orchestrator] Pre-warming AI for outbound call to {target_extension}...")
         
-        # Safely schedule the session negotiation on the main event loop
-        asyncio.run_coroutine_threadsafe(session.start(), self.loop)
+        target_info = f"Ext: {target_extension} | Context: {context}"
+        
+        # 1. Initialize the session WITHOUT a call object yet
+        session = CallSession(call=None, engine=self.engine, config=self.config, db_manager=self.db_manager)
+        
+        # 2. Connect the AI
+        connected = await session.setup_connection(direction="outbound", target_info=target_info)
+        if not connected:
+            print("[Orchestrator] AI setup failed. Aborting outbound call.")
+            return
+
+        # 3. NOW initiate the SIP invite (phone starts ringing)
+        print(f"[Orchestrator] AI Connected. Dialing {target_extension}...")
+        call = self.engine.make_outbound_call(target_extension)
+        
+        if not call:
+            print("[Orchestrator] Aborted: Line busy or error.")
+            session.cleanup()
+            return
+            
+        # Attach the live call object to the waiting session
+        session.call = call
+
+        # 4. Wait for the human to answer
+        timeout_seconds = 45 
+        elapsed = 0
+        while call.state.name not in ["ANSWERED", "ENDED", "REJECTED"]:
+            await asyncio.sleep(0.1) # Changed from 1 second to 100ms
+            elapsed += 0.1
+            if elapsed >= timeout_seconds:
+                print("[Orchestrator] Outbound call timeout (No Answer).")
+                session.cleanup()
+                return
+
+        # 5. INSTANT BRIDGE & WAKE UP
+        if call.state.name == "ANSWERED":
+            print("[Orchestrator] Call answered! Instantly bridging media.")
+            await session.run_bridge()
+        else:
+            print(f"[Orchestrator] Outbound call failed. Final State: {call.state.name}")
+            session.cleanup()
 
 if __name__ == "__main__":
     app = SIPAgentOrchestrator()

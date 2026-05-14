@@ -1,95 +1,109 @@
 import asyncio
 from gemini_client import GeminiClient
 from tool_registry import ToolRegistry
+from context_builder import ContextBuilder
 
 class CallSession:
-    def __init__(self, call, engine, config):
+    def __init__(self, call, engine, config, db_manager):
         self.call = call
         self.engine = engine
         self.config = config
+        self.db_manager = db_manager
         
         self.gemini_client = None
         self.ai_task = None
+        self.call_dropped_event = asyncio.Event()
+        self.direction = "inbound"
         
-        # Instantiate the business logic for this specific session
         self.tool_registry = ToolRegistry(self)
 
-    async def start(self):
-        """Negotiates the AI connection and begins the audio bridge."""
+    async def setup_connection(self, direction="inbound", target_info=None):
+        """Pre-warms the Gemini WebSocket connection before audio starts."""
+        self.direction = direction
+        caller = self.call.request.headers.get('From', {}).get('caller', 'Unknown') if direction == "inbound" else target_info
+
+        dynamic_prompt = ContextBuilder.build_initial_prompt(
+            self.config["system_prompt"], direction=direction, caller_info=caller
+        )
+
         self.gemini_client = GeminiClient(
             api_key=self.config["gemini_api_key"],
             pbx_to_ai_queue=self.engine.pbx_to_ai_queue,
             pbx_inject_callback=self.engine.inject_audio,
             pbx_flush_callback=self.engine.flush_tx_buffer,
             tool_handler_callback=self._handle_tool_call,
-            system_instruction=self.config["system_prompt"],
+            system_instruction=dynamic_prompt,
             tools=self.tool_registry.get_declarations()
         )
 
-        def safe_deny():
-            try: self.call.deny()
-            except Exception: pass
-
         try:
-            print(f"[CallSession] Attempting Gemini WebSocket handshake for {self.call.request.headers['From']['caller']}...")
-            connected = await asyncio.wait_for(self.gemini_client.connect(), timeout=5.0)
-            
-            if connected:
-                self.engine.answer_call(self.call)
-                self.ai_task = asyncio.create_task(self.gemini_client.run_audio_bridge())
-                
-                # Keep task alive while the call is active
-                while self.call.state.name == "ANSWERED":
-                    await asyncio.sleep(0.5)
-                
-                print("[CallSession] Call hung up by remote party.")
-
-                # Interject and request the summary before closing the bridge
-                if self.gemini_client.is_connected:
-                    await self.trigger_summary(reason="The user has hung up the phone.")
-                    
-                    while self.gemini_client.is_connected:
-                        await asyncio.sleep(0.1)
-
-                self.terminate_bridge()
-            else:
-                print("[CallSession] Gemini handshake failed. Rejecting call.")
-                safe_deny()
-                
-        except asyncio.TimeoutError:
-            print("[CallSession] Gemini API timeout. Rejecting call.")
-            safe_deny()
+            print(f"[CallSession] Pre-warming Gemini WebSocket ({direction})...")
+            return await asyncio.wait_for(self.gemini_client.connect(), timeout=10.0)
         except Exception as e:
-            print(f"[CallSession] Exception during negotiation: {e}")
-            safe_deny()
-            self.cleanup()
+            print(f"[CallSession] Connection failed: {e}")
+            return False
+
+    async def run_bridge(self):
+        """Engages the RTP media and AI loops instantly."""
+        if not self.call:
+            print("[CallSession] Error: Cannot bridge without a valid call object.")
+            return
+
+        if self.direction == "inbound":
+            self.engine.answer_call(self.call)
+        else:
+            self.engine.engage_outbound_media()
+
+            if self.gemini_client.is_connected:
+                await self.gemini_client.send_system_event(
+                    "The human has picked up the phone. Stop waiting. Say 'Hello?' immediately."
+                )
+            
+        self.ai_task = asyncio.create_task(self.gemini_client.run_audio_bridge())
+        monitor_task = asyncio.create_task(self._monitor_call_state())
+        
+        await self.call_dropped_event.wait()
+        
+        print("[CallSession] Call hung up by remote party.")
+        if self.gemini_client.is_connected:
+            await self.trigger_summary(reason="The user has hung up the phone.")
+            while self.gemini_client.is_connected:
+                await asyncio.sleep(0.1)
+
+        self.terminate_bridge()
 
     async def _handle_tool_call(self, call_id, name, args):
-        """Passes tool requests to the registry and routes the response back to Gemini."""
+        # [Keep this exactly as you had it in your uploaded file]
         print(f"[CallSession] Tool Execution Requested: {name}({args})")
-        result = await self.tool_registry.execute_tool(name, args)
+        try:
+            result = await self.tool_registry.execute_tool(name, args)
+        except Exception as e:
+            print(f"[CallSession] Tool Execution Exception: {e}")
+            result = {"error": "Internal System Error", "details": str(e), "status": "failed"}
         
         if result is not None and self.gemini_client.is_connected:
             await self.gemini_client.send_tool_response(call_id, name, result)
 
+    async def _monitor_call_state(self):
+        # [Keep exactly as uploaded]
+        try:
+            while self.call.state.name == "ANSWERED":
+                await asyncio.sleep(0.1)
+        finally:
+            self.call_dropped_event.set()
+
     def drop_call(self):
-        """Drops the SIP line."""
         self.engine.drop_call()
 
     async def trigger_summary(self, reason):
-        """Injects the command to force the AI to summarize."""
         if self.gemini_client and self.gemini_client.is_connected:
             await self.gemini_client.request_summary_and_close(reason)
 
     def terminate_bridge(self):
-        """Kills the WebSocket connection and async tasks."""
-        if self.gemini_client:
-            self.gemini_client.is_connected = False
-        if self.ai_task:
-            self.ai_task.cancel()
+        if self.gemini_client: self.gemini_client.is_connected = False
+        if self.ai_task: self.ai_task.cancel()
 
     def cleanup(self):
-        """Emergency cleanup method."""
         print("[CallSession] Cleaning up session resources...")
         self.drop_call()
         self.terminate_bridge()
