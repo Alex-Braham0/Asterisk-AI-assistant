@@ -32,7 +32,14 @@ class GeminiClient:
             "setup": {
                 "model": "models/gemini-2.5-flash-native-audio-preview-12-2025",
                 "generationConfig": {
-                    "responseModalities": ["AUDIO"]
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "voiceConfig": {
+                            "prebuiltVoiceConfig": {
+                                "voiceName": "Puck"  # Options: Puck, Charon, Aoede, Fenrir, Kore
+                            }
+                        }
+                    }
                 },
                 "systemInstruction": {
                     "parts": [{"text": self.system_instruction}]
@@ -53,7 +60,7 @@ class GeminiClient:
             return True
         return False
 
-    async def run_audio_bridge(self):
+    async def run_audio_bridge(self, on_disconnect_callback):
         """Runs the concurrent Uplink (Mic) and Downlink (Speaker) tasks."""
         uplink_task = asyncio.create_task(self._uplink_loop())
         downlink_task = asyncio.create_task(self._downlink_loop())
@@ -66,6 +73,10 @@ class GeminiClient:
             self.is_connected = False
             if self.ws:
                 await self.ws.close()
+            # TRIGGER CIRCUIT BREAKER
+            if not self.summary_requested:
+                self._log("[Gemini] Connection lost abruptly. Triggering SIP hangup.")
+                on_disconnect_callback()
 
     async def _uplink_loop(self):
         """Batches 8kHz PCM frames from the PBX and sends them to the Gemini API."""

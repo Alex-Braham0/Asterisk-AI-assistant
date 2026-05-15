@@ -5,45 +5,23 @@ import json
 
 class DatabaseManager:
     def __init__(self, sqlite_path="pbx_core.db", chroma_path="./chroma_data"):
-        # 1. Initialize SQLite (Deterministic Core)
         self.sql_conn = sqlite3.connect(sqlite_path, check_same_thread=False)
         self.sql_conn.row_factory = sqlite3.Row
         self._init_sql_tables()
 
-        # 2. Initialize ChromaDB (Semantic Brain)
         self.chroma_client = chromadb.PersistentClient(path=chroma_path)
         self.pref_collection = self.chroma_client.get_or_create_collection(name="home_context")
 
     def _init_sql_tables(self):
-        """Creates the Location-Centric relational schema."""
+        """Creates the flat Directory schema and the Task Queue."""
         cursor = self.sql_conn.cursor()
         
-        # Table 1: Physical Locations (Rooms)
+        # A single flat Directory table mirroring FreePBX
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Locations (
+            CREATE TABLE IF NOT EXISTS Directory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                is_communal BOOLEAN DEFAULT 0
-            )
-        ''')
-        
-        # Table 2: Telephony Devices (Tied strictly to a Location)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Extensions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sip_username TEXT NOT NULL UNIQUE,
-                location_id INTEGER NOT NULL,
-                FOREIGN KEY(location_id) REFERENCES Locations(id)
-            )
-        ''')
-        
-        # Table 3: People (Tied to a primary location, e.g., their bedroom)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                primary_location_id INTEGER,
-                FOREIGN KEY(primary_location_id) REFERENCES Locations(id)
+                extension TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL
             )
         ''')
 
@@ -51,47 +29,37 @@ class DatabaseManager:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS Tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_type TEXT NOT NULL, -- e.g., 'outbound_call', 'process_summary'
-                payload TEXT NOT NULL,   -- JSON string containing task arguments
+                task_type TEXT NOT NULL,
+                payload TEXT NOT NULL,
                 scheduled_time DATETIME NOT NULL,
-                status TEXT DEFAULT 'pending' -- 'pending', 'processing', 'completed', 'failed'
+                status TEXT DEFAULT 'pending'
             )
         ''')
         self.sql_conn.commit()
 
-    # --- ROUTING LOGIC ---
+    # --- DIRECTORY LOGIC ---
 
-    def get_extension_for_room(self, room_name):
-        """Resolves a room name (e.g., 'Kitchen') to its physical SIP extension."""
+    def get_full_directory(self):
+        """Returns the entire phonebook."""
+        cursor = self.sql_conn.cursor()
+        cursor.execute('SELECT extension, display_name FROM Directory')
+        return [dict(row) for row in cursor.fetchall()]
+
+    def lookup_extension(self, search_name):
+        """Fuzzy searches for an extension by its display name."""
         cursor = self.sql_conn.cursor()
         cursor.execute('''
-            SELECT e.sip_username 
-            FROM Locations l
-            JOIN Extensions e ON l.id = e.location_id
-            WHERE l.name LIKE ?
-        ''', (f"%{room_name}%",))
+            SELECT extension, display_name 
+            FROM Directory 
+            WHERE display_name LIKE ?
+        ''', (f"%{search_name}%",))
         
-        result = cursor.fetchone()
-        return result['sip_username'] if result else None
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
-    def get_extension_for_person(self, person_name):
-        """Resolves a person's name to the SIP extension of their primary room."""
-        cursor = self.sql_conn.cursor()
-        cursor.execute('''
-            SELECT e.sip_username 
-            FROM Users u
-            JOIN Locations l ON u.primary_location_id = l.id
-            JOIN Extensions e ON l.id = e.location_id
-            WHERE u.name LIKE ?
-        ''', (f"%{person_name}%",))
-        
-        result = cursor.fetchone()
-        return result['sip_username'] if result else None
-
-    # --- SEMANTIC MEMORY (ChromaDB) ---
+    # --- SEMANTIC MEMORY & TASKS ---
     
     def save_context_fact(self, subject, fact_text):
-        """Embeds a fact about a user or room into the vector database."""
         doc_id = f"{subject.replace(' ', '_')}_{int(time.time())}"
         self.pref_collection.add(
             documents=[fact_text],
@@ -101,19 +69,46 @@ class DatabaseManager:
         return True
     
     def schedule_callback(self, target_extension, scheduled_time, context):
-        """Inserts a pending outbound call request into the Unified Tasks queue."""
         cursor = self.sql_conn.cursor()
-        
-        # Package the arguments into the JSON payload expected by app.py's worker
         payload = json.dumps({
             "target_extension": target_extension, 
             "context": context
         })
-        
         cursor.execute('''
             INSERT INTO Tasks (task_type, payload, scheduled_time)
             VALUES (?, ?, ?)
         ''', ('outbound_call', payload, scheduled_time))
-        
         self.sql_conn.commit()
         return True
+    
+    def get_pending_calls(self, target_extension):
+        """Retrieves a list of pending calls for a specific extension."""
+        cursor = self.sql_conn.cursor()
+        cursor.execute('''
+            SELECT id, scheduled_time, payload
+            FROM Tasks 
+            WHERE task_type = 'outbound_call' 
+            AND status = 'pending' 
+            AND payload LIKE ?
+        ''', (f'%"target_extension": "{target_extension}"%',))
+        
+        results = []
+        for row in cursor.fetchall():
+            payload_data = json.loads(row['payload'])
+            results.append({
+                "task_id": row['id'],
+                "scheduled_time": row['scheduled_time'],
+                "context": payload_data.get('context', 'No context')
+            })
+        return results
+
+    def cancel_task_by_id(self, task_id):
+        """Surgically cancels a specific task by its primary key ID."""
+        cursor = self.sql_conn.cursor()
+        cursor.execute('''
+            UPDATE Tasks 
+            SET status = 'cancelled' 
+            WHERE id = ? AND status = 'pending'
+        ''', (task_id,))
+        self.sql_conn.commit()
+        return cursor.rowcount

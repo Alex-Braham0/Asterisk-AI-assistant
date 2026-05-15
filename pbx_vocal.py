@@ -41,8 +41,17 @@ class MediaEngine:
     def _internal_incoming_call_handler(self, call):
         """Rejects secondary calls if an active call is already in progress."""
         if self.active_call is not None:
-            call.deny()
+            caller = call.request.headers.get('From', {}).get('caller', 'Unknown')
+            print(f"[MediaEngine] Line busy. Automatically rejecting secondary call from {caller}.")
+            try:
+                call.deny()
+            except AttributeError:
+                # Suppress pyVoIP's internal RTP bug where it tries to close an uninitialized socket
+                pass
+            except Exception as e:
+                print(f"[MediaEngine] Minor error while rejecting call: {e}")
             return
+            
         self.on_call_callback(call)
 
     def make_outbound_call(self, target_extension):

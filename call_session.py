@@ -20,7 +20,15 @@ class CallSession:
     async def setup_connection(self, direction="inbound", target_info=None):
         """Pre-warms the Gemini WebSocket connection before audio starts."""
         self.direction = direction
-        caller = self.call.request.headers.get('From', {}).get('caller', 'Unknown') if direction == "inbound" else target_info
+
+        # Determine caller/target info safely
+        if direction == "inbound":
+            from_header = self.call.request.headers.get('From', {})
+            caller_name = from_header.get('caller', 'Unknown').replace('"', '') # Strip weird quotes
+            caller_number = from_header.get('number', 'Unknown')
+            caller = f"Name: {caller_name} | Extension: {caller_number}"
+        else:
+            caller = target_info
 
         dynamic_prompt = ContextBuilder.build_initial_prompt(
             self.config["system_prompt"], direction=direction, caller_info=caller
@@ -59,7 +67,9 @@ class CallSession:
                     "The human has picked up the phone. Stop waiting. Say 'Hello?' immediately."
                 )
             
-        self.ai_task = asyncio.create_task(self.gemini_client.run_audio_bridge())
+        self.ai_task = asyncio.create_task(self.gemini_client.run_audio_bridge(
+            on_disconnect_callback=self.drop_call
+        ))
         monitor_task = asyncio.create_task(self._monitor_call_state())
         
         await self.call_dropped_event.wait()
