@@ -137,7 +137,7 @@ class ToolRegistry:
         if name == "end_call":
             reason = args.get("reason", "No reason provided")
             print(f"[ToolRegistry] AI initiated call termination. Reason: {reason}")
-            self.session.drop_call()
+            asyncio.create_task(self.session.drain_audio_and_drop_call())
             
             asyncio.create_task(self.session.trigger_summary(
                 reason="You (the AI) have ended the call via the 'end_call' tool."
@@ -167,29 +167,38 @@ class ToolRegistry:
             return {"status": "success", "directory": directory}
 
         elif name == "schedule_outbound_call":
-            target = str(args.get("target_extension", ""))
-            scheduled_time = args.get("scheduled_time")
+            target = args.get("target_extension")
+            scheduled_local_str = args.get("scheduled_time")
             context = args.get("context")
             
-            # The Safety Net: Auto-resolve if Winston hallucinates a name instead of a number
-            if not target.replace('*', '').isdigit():
-                print(f"[ToolRegistry] Warning: AI passed non-numeric target '{target}'. Attempting auto-resolve.")
-                resolved = self.session.db_manager.lookup_extension(target)
-                
-                if resolved:
-                    target = resolved['extension']
-                    print(f"[ToolRegistry] Auto-resolved to extension '{target}'.")
-                else:
-                    return {
-                        "status": "failed", 
-                        "message": f"Could not schedule. '{target}' is not a numeric extension and could not be resolved."
-                    }
+            import datetime
+            import zoneinfo
             
             try:
-                self.session.db_manager.schedule_callback(target, scheduled_time, context)
-                return {"status": "success", "message": f"Outbound call scheduled to numeric extension {target}."}
+                # 1. Get the specific timezone for this extension from the database
+                user_tz_str = self.session.db_manager.get_user_timezone(target)
+                local_tz = zoneinfo.ZoneInfo(user_tz_str)
+                
+                # 2. Parse the AI's string and attach the local timezone
+                naive_dt = datetime.datetime.strptime(scheduled_local_str, "%Y-%m-%d %H:%M:%S")
+                local_dt = naive_dt.replace(tzinfo=local_tz)
+                
+                # 3. Convert it to pure UTC
+                utc_dt = local_dt.astimezone(datetime.timezone.utc)
+                utc_str = utc_dt.strftime("%Y-%m-%d %H:%M:%S")
+                
+                print(f"[ToolRegistry] Translating Time: {scheduled_local_str} ({user_tz_str}) -> {utc_str} (UTC)")
+                
+                # 4. Save the UTC time to the database
+                # (Ensure your database manager method matches this name)
+                self.session.db_manager.schedule_callback(target, utc_str, context) 
+                
+                return {
+                    "status": "success", 
+                    "message": f"Call successfully scheduled for {scheduled_local_str} local time."
+                }
             except Exception as e:
-                return {"status": "failed", "message": f"Database error: {str(e)}"}
+                return {"status": "failed", "message": f"Scheduling error: {str(e)}"}
             
         elif name == "check_scheduled_calls":
             target = str(args.get("target_extension", ""))

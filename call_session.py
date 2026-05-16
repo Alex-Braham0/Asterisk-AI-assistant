@@ -28,10 +28,20 @@ class CallSession:
             caller_number = from_header.get('number', 'Unknown')
             caller = f"Name: {caller_name} | Extension: {caller_number}"
         else:
-            caller = target_info
+            if isinstance(target_info, dict):
+                caller_number = str(target_info.get("extension", target_info.get("target_extension", "Unknown")))
+                caller = f"Target: {caller_number} | Context: {target_info.get('context', '')}"
+            else:
+                caller_number = str(target_info)
+                caller = f"Target: {caller_number}"
+
+        caller_tz = self.db_manager.get_user_timezone(caller_number)
 
         dynamic_prompt = ContextBuilder.build_initial_prompt(
-            self.config["system_prompt"], direction=direction, caller_info=caller
+            self.config["system_prompt"], 
+            direction=direction, 
+            caller_info=caller,
+            user_timezone=caller_tz
         )
 
         self.gemini_client = GeminiClient(
@@ -104,6 +114,22 @@ class CallSession:
 
     def drop_call(self):
         self.engine.drop_call()
+
+    async def drain_audio_and_drop_call(self):
+        """Dynamically waits for the TX buffer to empty, accounting for delayed AI chunks."""
+        print("[CallSession] Engaging dynamic audio drain...")
+        
+        silence_cycles = 0
+        # Wait for 1.5 seconds of CONTINUOUS silence (15 consecutive empty cycles)
+        while silence_cycles < 15:
+            if len(self.engine.tx_buffer) > 0:
+                silence_cycles = 0  # Reset the clock! AI sent a late chunk.
+            else:
+                silence_cycles += 1
+            await asyncio.sleep(0.1)
+        
+        print("[CallSession] Stream continuously silent. Hanging up.")
+        self.drop_call()
 
     async def trigger_summary(self, reason):
         if self.gemini_client and self.gemini_client.is_connected:

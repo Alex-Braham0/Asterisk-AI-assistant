@@ -21,7 +21,8 @@ class DatabaseManager:
             CREATE TABLE IF NOT EXISTS Directory (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 extension TEXT NOT NULL UNIQUE,
-                display_name TEXT NOT NULL
+                display_name TEXT NOT NULL,
+                timezone TEXT DEFAULT 'Europe/London'
             )
         ''')
 
@@ -56,6 +57,13 @@ class DatabaseManager:
         
         row = cursor.fetchone()
         return dict(row) if row else None
+    
+    def get_user_timezone(self, extension):
+        """Fetches the IANA timezone for a specific extension."""
+        cursor = self.sql_conn.cursor()
+        cursor.execute("SELECT timezone FROM Directory WHERE extension = ?", (extension,))
+        result = cursor.fetchone()
+        return result['timezone'] if result else 'Europe/London'
 
     # --- SEMANTIC MEMORY & TASKS ---
     

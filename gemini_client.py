@@ -18,6 +18,7 @@ class GeminiClient:
         self.ws = None
         self.is_connected = False
         self.summary_requested = False
+        self.tool_call_pending = False
 
     def _log(self, msg):
         timestamp = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
@@ -83,6 +84,10 @@ class GeminiClient:
         audio_buffer = bytearray()
         
         while self.is_connected:
+            if self.tool_call_pending:
+                await asyncio.sleep(0.01)
+                continue
+
             try:
                 pcm_8k = self.pbx_to_ai_queue.get_nowait()
                 audio_buffer.extend(pcm_8k)
@@ -142,22 +147,23 @@ class GeminiClient:
                                     buffer_24k.extend(pcm_api)
                                     
                     # Wait for 50ms of audio (2400 bytes) instead of 200ms
-                    while len(buffer_24k) >= 2400:
-                        large_chunk_24k = bytes(buffer_24k[:2400])
-                        del buffer_24k[:2400]
+                    while len(buffer_24k) >= 6:
+                        # Find the largest multiple of 6
+                        chunk_size = len(buffer_24k) - (len(buffer_24k) % 6)
+                        chunk_24k = bytes(buffer_24k[:chunk_size])
+                        del buffer_24k[:chunk_size]
                         
-                        audio_24k = np.frombuffer(large_chunk_24k, dtype=np.int16)
+                        audio_24k = np.frombuffer(chunk_24k, dtype=np.int16)
                         audio_24k = np.clip(audio_24k * 0.8, -32768, 32767).astype(np.int16)
                         
-                        # Anti-aliasing: Boxcar filter (average of every 3 samples)
-                        # Reshaping into groups of 3 and taking the mean acts as a low-pass filter
-                        # before downsampling, preventing metallic/robotic aliasing artifacts.
+                        # Downsample 24kHz to 8kHz
                         audio_8k = audio_24k.reshape(-1, 3).mean(axis=1).astype(np.int16)
-
                         self.pbx_inject_callback(audio_8k.tobytes())
                         
                 # 2. Handle TOOL CALLS
                 if "toolCall" in data:
+                    self.tool_call_pending = True
+                    self._log("[Gemini] Tool Call received. Pausing audio uplink.")
                     function_calls = data["toolCall"].get("functionCalls", [])
                     for call in function_calls:
                         call_id = call.get("id")
@@ -188,8 +194,10 @@ class GeminiClient:
         try:
             await self.ws.send(json.dumps(response_msg))
             self._log(f"[Gemini] Sent toolResponse for {name}.")
+            self.tool_call_pending = False  # <--- RESET THE BREAKER
         except Exception as e:
             self._log(f"[Gemini] Failed to send toolResponse: {e}")
+            self.tool_call_pending = False  # Ensure it resets on error to prevent freezing
 
     async def request_summary_and_close(self, reason):
         """Injects the command to execute the summary tool."""

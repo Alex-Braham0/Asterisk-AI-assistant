@@ -1,168 +1,259 @@
 import threading
 import queue
-from pyVoIP.VoIP import VoIPPhone, CallState, InvalidStateError
+import socket
+import json
+import time
+import asyncio
+import traceback
+import sounddevice as sd
 import numpy as np
+
+class CallState:
+    ANSWERED = "ANSWERED"
+    ENDED = "ENDED"
+    RINGING = "RINGING"
+
+class MockSIPRequest:
+    def __init__(self, caller_name, caller_number):
+        self.headers = {
+            'From': {
+                'caller': str(caller_name),
+                'number': str(caller_number).strip()
+            }
+        }
+
+class BaresipCallInstance:
+    def __init__(self, caller_name, caller_number, call_id, parent_engine):
+        self._id = call_id
+        self._engine = parent_engine
+        self.request = MockSIPRequest(caller_name, caller_number)
+        self.state = self
+
+    @property
+    def name(self):
+        if self._engine.active_call_id == self._id:
+            if self._engine.media_active:
+                return "ANSWERED"
+            return "RINGING"
+        return "ENDED"
+
+    def answer(self):
+        pass
+
+    def deny(self):
+        self._engine.drop_call()
 
 class MediaEngine:
     def __init__(self, sip_ip, sip_port, username, password, on_call_callback, my_ip):
         self.username = username
         self.on_call_callback = on_call_callback
+        self.main_loop = asyncio.get_event_loop()
         
-        self.phone = VoIPPhone(
-            sip_ip, sip_port, username, password, 
-            callCallback=self._internal_incoming_call_handler,
-            myIP=my_ip
-        )
-        
-        self.active_call = None
+        self.ctrl_host = "127.0.0.1"
+        self.ctrl_port = 4444
+
+        # ALSA Device Mapping (Mirroring the Baresip config)
+        self.alsa_rx_device = None#'Baresip_Rx.monitor' # Listens to Baresip's output
+        self.alsa_tx_device = None#'Baresip_Tx' # Speaks to Baresip's input
+
+        self.active_call = None 
+        self.active_call_id = None
+        self.media_active = False
         self._is_running = False
-        self.heartbeat_thread = None
         
-        # Audio transport queues
+        self.heartbeat_thread = None
+        self.ctrl_listener_thread = None
+        
         self.pbx_to_ai_queue = queue.Queue() 
         self.tx_buffer = bytearray()
         self.tx_lock = threading.Lock()
 
     def start(self):
-        self.phone.start()
-        print(f"[MediaEngine] Registered SIP account: {self.username}")
+        self._is_running = True
+        self.ctrl_listener_thread = threading.Thread(target=self._ctrl_listener_loop, daemon=True)
+        self.ctrl_listener_thread.start()
+        print(f"[MediaEngine] Baresip interface initialized for user: {self.username}")
 
     def stop(self):
         self._is_running = False
         if self.active_call:
-            try:
-                self.active_call.hangup()
-            except InvalidStateError:
-                pass
-        self.phone.stop()
+            self.drop_call()
         if self.heartbeat_thread:
             self.heartbeat_thread.join(timeout=2.0)
+        if self.ctrl_listener_thread:
+            self.ctrl_listener_thread.join(timeout=2.0)
 
-    def _internal_incoming_call_handler(self, call):
-        """Rejects secondary calls if an active call is already in progress."""
-        if self.active_call is not None:
-            caller = call.request.headers.get('From', {}).get('caller', 'Unknown')
-            print(f"[MediaEngine] Line busy. Automatically rejecting secondary call from {caller}.")
+    def _send_cmd(self, command, params=""):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((self.ctrl_host, self.ctrl_port))
+            payload = {"command": command.strip().replace('/', ''), "params": params.strip()}
+            json_payload = json.dumps(payload)
+            netstring_payload = f"{len(json_payload)}:{json_payload},"
+            s.sendall(netstring_payload.encode('utf-8'))
+            s.settimeout(0.5)
+            try: s.recv(2048)
+            except socket.timeout: pass
+            s.close()
+        except Exception as e:
+            print(f"[MediaEngine] Command send failure ({command}): {e}")
+
+    def _ctrl_listener_loop(self):
+        while self._is_running:
             try:
-                call.deny()
-            except AttributeError:
-                # Suppress pyVoIP's internal RTP bug where it tries to close an uninitialized socket
-                pass
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect((self.ctrl_host, self.ctrl_port))
+                buffer = ""
+                while self._is_running:
+                    data = s.recv(4096).decode('utf-8', errors='ignore')
+                    if not data: break
+                    buffer += data
+                    while True:
+                        if not buffer or ":" not in buffer: break
+                        try:
+                            len_str, remaining = buffer.split(":", 1)
+                            length = int(len_str)
+                        except ValueError:
+                            buffer = buffer[1:]
+                            continue
+                        if len(remaining) < (length + 1): break
+                        json_payload = remaining[:length]
+                        buffer = remaining[length + 1:] 
+                        try:
+                            event = json.loads(json_payload)
+                            if isinstance(event, dict):
+                                self._handle_baresip_event(event)
+                        except json.JSONDecodeError: continue
+                s.close()
             except Exception as e:
-                print(f"[MediaEngine] Minor error while rejecting call: {e}")
-            return
+                print(f"\n[MediaEngine CRITICAL] Control Loop Exception: {e}")
+                traceback.print_exc()
+                time.sleep(1)
+
+    def _handle_baresip_event(self, event):
+        ev_type = event.get("type", "")
+        call_id = event.get("id")
+
+        peer_uri = event.get("peeruri", "")
+        peer_num = "Unknown"
+        if peer_uri.startswith("sip:"):
+            peer_num = peer_uri.split("@")[0].replace("sip:", "")
             
-        self.on_call_callback(call)
+        peer_name = event.get("peerdisplayname", peer_num)
+
+        if event.get("direction") == "outgoing":
+            if self.active_call is not None and str(self.active_call_id).startswith("out-"):
+                print(f"[MediaEngine] Outbound Call ID locked: {call_id}")
+                self.active_call_id = call_id
+                self.active_call._id = call_id
+        
+        if ev_type in ["CALL_INCOMING", "CALL_LOCAL_SDP"] and event.get("direction") == "incoming":
+            if self.active_call is not None:
+                if self.active_call_id != call_id:
+                    self._send_cmd("hangup")
+                return
+            self.active_call_id = call_id
+            self.media_active = False
+
+            self.active_call = BaresipCallInstance(peer_name, peer_num, call_id, self)
+            print(f"[MediaEngine] Incoming call tracked: ID={call_id} from {peer_name} ({peer_num})")
+            self.main_loop.call_soon_threadsafe(self.on_call_callback, self.active_call)
+
+        elif ev_type == "CALL_ESTABLISHED" and call_id == self.active_call_id:
+            self.media_active = True
+
+        elif ev_type == "CALL_CLOSED" and call_id == self.active_call_id:
+            print(f"[MediaEngine] Call tracking session terminated.")
+            self.media_active = False
+            self.active_call = None
+            self.active_call_id = None
 
     def make_outbound_call(self, target_extension):
-        """Initiates an outbound SIP invite."""
         if self.active_call is not None:
-            print("[MediaEngine] Cannot dial out, line is busy.")
+            print("[MediaEngine] Line busy. Aborting outbound dialing sequence.")
             return None
         
-        try:
-            # pyVoIP's native outbound dialing method
-            outbound_call = self.phone.call(target_extension)
-            self.active_call = outbound_call
-            return outbound_call
-        except Exception as e:
-            print(f"[MediaEngine] Failed to initiate outbound call: {e}")
-            return None
+        # Create a temporary tracking ID
+        generated_id = f"out-{int(time.time())}"
+        self.active_call_id = generated_id
+        self.media_active = False
+        
+        # FIX: Pass the target_extension twice to satisfy the new Name/Number signature
+        self.active_call = BaresipCallInstance(target_extension, target_extension, generated_id, self)
+        
+        print(f"[MediaEngine] Spawning outbound track path to extension: {target_extension}")
+        self._send_cmd("dial", str(target_extension))
+        return self.active_call
 
     def engage_outbound_media(self):
-        """Starts the RTP heartbeat for an answered outbound call."""
-        if not self.active_call or self.active_call.state.name != "ANSWERED":
-            return False
-            
-        print(f"[MediaEngine] Outbound call connected. Engaging RTP Sync.")
         with self.pbx_to_ai_queue.mutex: self.pbx_to_ai_queue.queue.clear()
         with self.tx_lock: self.tx_buffer.clear()
-        
         self._is_running = True
+        self.media_active = True
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self.heartbeat_thread.start()
         return True
 
     def answer_call(self, call):
-        """Answers the call and starts the synchronized RTP heartbeat loop."""
-        self.active_call = call
-        try:
-            self.active_call.answer()
-            print(f"[MediaEngine] Answered call from {call.request.headers['From']['caller']}")
-            
-            # Flush state from previous calls
-            with self.pbx_to_ai_queue.mutex: self.pbx_to_ai_queue.queue.clear()
-            with self.tx_lock: self.tx_buffer.clear()
-            
-            self._is_running = True
-            self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
-            self.heartbeat_thread.start()
-        except InvalidStateError:
-            print("[MediaEngine] Call dropped before we could answer.")
+        self._send_cmd("accept")
+        with self.pbx_to_ai_queue.mutex: self.pbx_to_ai_queue.queue.clear()
+        with self.tx_lock: self.tx_buffer.clear()
+        self._is_running = True
+        self.media_active = True
+        self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self.heartbeat_thread.start()
 
     def drop_call(self):
-        self._is_running = False
-        if self.active_call:
-            try:
-                self.active_call.hangup()
-            except InvalidStateError:
-                pass
+        # self.media_active = False
+        self._send_cmd("hangup")
         self.active_call = None
+        self.active_call_id = None
     
     def flush_tx_buffer(self):
-        """Instantly clears the transmit buffer when the AI is interrupted."""
         with self.tx_lock:
             self.tx_buffer.clear()
-            print("[MediaEngine] TX Buffer Flushed (AI Interrupted).")
 
     def inject_audio(self, pcm_8k_bytes):
-        """Thread-safe injection of audio payloads from the AI client into the PBX transmit buffer."""
         with self.tx_lock:
             self.tx_buffer.extend(pcm_8k_bytes)
 
     def _heartbeat_loop(self):
-        """Synchronous 20ms RTP loop handling bidirectional audio transport."""
-        print("[MediaEngine] PBX RTP Sync engaged (Linear PCM Mode).")
+        print("[MediaEngine] Software Audio Bridge Engaged (Callback Mode).")
         
-        while self._is_running and self.active_call and self.active_call.state == CallState.ANSWERED:
-            
-            # --- RX PHASE: PBX to AI ---
+        def audio_callback(indata, outdata, frames, time_info, status):
+            # --- RX PHASE: PulseAudio -> AI ---
             try:
-                # pyVoIP outputs raw Unsigned 8-bit PCM
-                rx_raw_unsigned_8 = self.active_call.read_audio(length=160, blocking=True)
-                if not rx_raw_unsigned_8:
-                    break
-                
-                # Map pyVoIP Unsigned 8-bit to Standard Signed 16-bit PCM
-                rx_arr = np.frombuffer(rx_raw_unsigned_8, dtype=np.uint8)
-                rx_signed_8 = rx_arr.astype(np.int16) - 128
-                rx_pcm_16 = (rx_signed_8 * 256).astype(np.int16).tobytes()
-                
-                try:
-                    self.pbx_to_ai_queue.put_nowait(rx_pcm_16)
-                except queue.Full:
-                    pass 
-            except Exception as e:
-                print(f"[MediaEngine] CRITICAL RX EXCEPTION: {repr(e)}")
-                break
+                self.pbx_to_ai_queue.put_nowait(bytes(indata))
+            except queue.Full:
+                pass
 
-            # --- TX PHASE: AI to PBX ---
+            # --- TX PHASE: AI -> PulseAudio ---
+            required_bytes = frames * 2  # 16-bit Mono = 2 bytes per frame
             with self.tx_lock:
-                # Extract exactly one 20ms frame (320 bytes at 8kHz 16-bit)
-                if len(self.tx_buffer) >= 320:
-                    tx_pcm_16 = bytes(self.tx_buffer[:320])
-                    del self.tx_buffer[:320]
+                if len(self.tx_buffer) >= required_bytes:
+                    # Inject AI audio into the outbound stream
+                    outdata[:] = self.tx_buffer[:required_bytes]
+                    del self.tx_buffer[:required_bytes]
                 else:
-                    # Inject silence if AI is processing to keep RTP stream alive
-                    tx_pcm_16 = b'\x00' * 320 
+                    # Inject silence if the AI buffer is empty
+                    outdata[:] = b'\x00' * required_bytes
+
+        try:
+            # Initialize the stream with the background callback
+            with sd.RawStream(
+                samplerate=8000, 
+                blocksize=160, 
+                channels=1, 
+                dtype='int16',
+                callback=audio_callback,
+                latency='low'
+            ):
+                # The while loop now only exists to keep the thread alive. 
+                # It does zero audio processing.
+                while self._is_running and self.active_call and self.media_active:
+                    time.sleep(0.1)
+                    
+        except Exception as e:
+            print(f"[MediaEngine] Failed to open callback stream: {e}")
             
-            # Map Standard Signed 16-bit PCM back to pyVoIP Unsigned 8-bit
-            tx_arr_16 = np.frombuffer(tx_pcm_16, dtype=np.int16)
-            tx_unsigned_8 = ((tx_arr_16 // 256) + 128).astype(np.uint8).tobytes()
-            
-            # CRITICAL FIX: Check if the call is still alive before writing
-            if self._is_running and self.active_call:
-                self.active_call.write_audio(tx_unsigned_8)
-                
-        print("\n[MediaEngine] PBX RTP Sync stopped.")
-        self._is_running = False
+        print("\n[MediaEngine] Audio Bridge stopped.")

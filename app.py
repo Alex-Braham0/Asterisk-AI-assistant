@@ -60,10 +60,20 @@ class SIPAgentOrchestrator:
 
     async def _background_task_worker(self):
         """Proactive loop monitoring the database for scheduled tasks."""
-        print("[Worker] Background task loop engaged.")
+        print("[Worker] Background task loop engaged (UTC Timebase).")
+        import datetime
+
+        heartbeat_counter = 0
+
         while True:
             try:
-                now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                # 1. Force the current time to pure UTC to match the AI's translation
+                now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                
+                # 2. Print a visible heartbeat every 10 seconds (every 2nd loop since sleep is 5s)
+                if heartbeat_counter % 2 == 0:
+                    pass #print(f"[Worker Heartbeat] UTC Time: {now_utc}")
+                heartbeat_counter += 1
                 
                 # Fetch ONE pending task whose time has come
                 cursor = self.db_manager.sql_conn.cursor()
@@ -72,7 +82,7 @@ class SIPAgentOrchestrator:
                     FROM Tasks 
                     WHERE status = 'pending' AND scheduled_time <= ?
                     ORDER BY scheduled_time ASC LIMIT 1
-                ''', (now,))
+                ''', (now_utc,))
                 
                 task = cursor.fetchone()
                 
@@ -84,11 +94,11 @@ class SIPAgentOrchestrator:
                     cursor.execute("UPDATE Tasks SET status = 'processing' WHERE id = ?", (task_id,))
                     self.db_manager.sql_conn.commit()
                     
-                    print(f"[Worker] Executing Task {task_id}: {task_type}")
+                    print(f"\n[Worker] ⚡ FIRING SCHEDULED TASK {task_id}: {task_type} at {now_utc}")
                     
                     # Route the task
                     if task_type == "outbound_call":
-                        await self._initiate_outbound_call(payload['target_extension'], payload['context'])
+                        asyncio.create_task(self._initiate_outbound_call(payload['target_extension'], payload['context']))
                     elif task_type == "process_summary":
                         # Hand the summary off to an LLM or vector DB
                         pass 
