@@ -141,6 +141,14 @@ class MediaEngine:
             
         peer_name = event.get("peerdisplayname", peer_num)
 
+        if ev_type == "CALL_DTMF_START":
+            digit = event.get("param", "Unknown")
+            print(f"\n[MediaEngine] ☎️ KEYPAD PRESS RECEIVED: {digit}")
+            # Later, we can inject this into the AI's queue!
+            return
+        elif ev_type == "CALL_DTMF_END":
+            return # Silently consume the end event so it doesn't trigger other logic
+
         if event.get("direction") == "outgoing":
             if self.active_call is not None and str(self.active_call_id).startswith("out-"):
                 print(f"[MediaEngine] Outbound Call ID locked: {call_id}")
@@ -167,6 +175,36 @@ class MediaEngine:
             self.media_active = False
             self.active_call = None
             self.active_call_id = None
+
+    def send_dtmf(self, digit):
+        """Bypasses ctrl_tcp and injects DTMF via the UDP console module."""
+        if self.active_call is not None:
+            # Extract exactly one character
+            clean_digit = str(digit).strip()[0]
+            print(f"[MediaEngine] Injecting DTMF Tone via UDP: {clean_digit}")
+            
+            try:
+                # Fire the raw character at Baresip's UDP console
+                udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                udp_sock.sendto(clean_digit.encode('utf-8'), ("127.0.0.1", 5555))
+                udp_sock.close()
+            except Exception as e:
+                print(f"[MediaEngine] Failed to send UDP DTMF: {e}")
+        else:
+            print("[MediaEngine] Cannot send DTMF: No active call.")
+
+    def transfer_call(self, target_extension):
+        """Executes a SIP REFER to blind-transfer the active call."""
+        if self.active_call is not None:
+            print(f"[MediaEngine] Executing Blind Transfer to Extension: {target_extension}")
+            # Baresip command for blind transfer is 'transfer <uri>'
+            sip_uri = f"sip:{target_extension}@192.168.1.200"
+            self._send_cmd("transfer", sip_uri)
+            
+            # The PBX will handle the routing and immediately drop our leg of the call.
+            # This automatically triggers the normal CALL_CLOSED cleanup sequence.
+        else:
+            print("[MediaEngine] Cannot transfer: No active call.")
 
     def make_outbound_call(self, target_extension):
         if self.active_call is not None:

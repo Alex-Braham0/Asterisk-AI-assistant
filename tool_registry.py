@@ -128,6 +128,38 @@ class ToolRegistry:
                     },
                     "required": ["target_extension", "scheduled_time", "context"]
                 }
+            },
+            {
+                "name": "send_dtmf",
+                "description": "Presses a key on the phone's dialpad. Useful for navigating automated menus or triggering PBX extension codes.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                    "digit": {
+                        "type": "string",
+                        "description": "A single character to press: 0-9, *, or #"
+                    }
+                    },
+                    "required": ["digit"]
+                }
+            },
+            {
+                "name": "transfer_call",
+                "description": "Transfers the current call to another extension. Use this when the user asks to speak to a human or a specific person.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                    "target_extension": {
+                        "type": "string",
+                        "description": "The numeric extension to transfer to (e.g., '6' or '16')."
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "The reason for the transfer."
+                    }
+                    },
+                    "required": ["target_extension"]
+                }
             }
         ]
 
@@ -287,5 +319,32 @@ class ToolRegistry:
                 }
             except Exception as e:
                 return {"status": "failed", "message": f"Database error: {str(e)}"}
+            
+        elif name == "send_dtmf":
+            digit = args.get("digit")
+            try:
+                # Tell the MediaEngine to fire the command
+                self.session.engine.send_dtmf(digit)
+                return {"status": "success", "message": f"Successfully pressed {digit}."}
+            except Exception as e:
+                return {"status": "failed", "message": f"Failed to send DTMF: {e}"}
+        
+        elif name == "transfer_call":
+            target = args.get("target_extension")
+            reason = args.get("reason", "No reason provided")
+            print(f"[ToolRegistry] AI initiated transfer to {target}. Reason: {reason}")
+            
+            try:
+                # Trigger the PBX transfer
+                self.session.engine.transfer_call(target)
+                
+                # Request a final summary since Winston's job is done
+                import asyncio
+                asyncio.create_task(self.session.trigger_summary(
+                    reason=f"Call transferred to {target}. Reason: {reason}"
+                ))
+                return {"status": "success", "message": f"Transferring to {target} initiated."}
+            except Exception as e:
+                return {"status": "failed", "message": f"Transfer failed: {e}"}
             
         return {"error": "Function not implemented."}
