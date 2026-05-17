@@ -114,9 +114,20 @@ class SIPAgentOrchestrator:
             await asyncio.sleep(5)
 
     def _handle_ringing_call(self, call):
-        """Safely delegates inbound ringing to an async task."""
+        """Safely delegates inbound ringing to an async task and catches errors."""
         print(f"\n[App] Call ringing from {call.request.headers['From']['caller']}...")
-        asyncio.run_coroutine_threadsafe(self._process_inbound_call(call), self.loop)
+        future = asyncio.run_coroutine_threadsafe(self._process_inbound_call(call), self.loop)
+        
+        # Unmask silent asyncio exceptions
+        def check_exception(f):
+            try:
+                f.result()
+            except Exception as e:
+                import traceback
+                print(f"[App Error] Fatal exception in inbound call handler: {e}")
+                traceback.print_exc()
+                
+        future.add_done_callback(check_exception)
 
     async def _process_inbound_call(self, call):
         """Connects the AI before picking up the receiver."""
@@ -157,22 +168,37 @@ class SIPAgentOrchestrator:
         session.call = call
 
         # 4. Wait for the human to answer
-        timeout_seconds = 45 
-        elapsed = 0
-        while call.state.name not in ["ANSWERED", "ENDED", "REJECTED"]:
-            await asyncio.sleep(0.1) # Changed from 1 second to 100ms
-            elapsed += 0.1
-            if elapsed >= timeout_seconds:
+        timeout_seconds = 45.0
+        try:
+            answer_task = asyncio.create_task(call.answered_event.wait())
+            end_task = asyncio.create_task(call.ended_event.wait())
+            
+            # Wait for either Answered or Ended, up to 45 seconds
+            done, pending = await asyncio.wait(
+                [answer_task, end_task],
+                timeout=timeout_seconds,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # Clean up pending tasks
+            for p in pending:
+                p.cancel()
+
+            if not done:
                 print("[Orchestrator] Outbound call timeout (No Answer).")
                 session.cleanup()
                 return
 
-        # 5. INSTANT BRIDGE & WAKE UP
-        if call.state.name == "ANSWERED":
-            print("[Orchestrator] Call answered! Instantly bridging media.")
-            await session.run_bridge()
-        else:
-            print(f"[Orchestrator] Outbound call failed. Final State: {call.state.name}")
+            # 5. INSTANT BRIDGE & WAKE UP
+            if call.answered_event.is_set():
+                print("[Orchestrator] Call answered! Instantly bridging media.")
+                await session.run_bridge()
+            else:
+                print("[Orchestrator] Outbound call failed or rejected.")
+                session.cleanup()
+
+        except Exception as e:
+            print(f"[Orchestrator Error] {e}")
             session.cleanup()
 
 if __name__ == "__main__":

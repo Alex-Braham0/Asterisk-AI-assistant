@@ -29,6 +29,9 @@ class BaresipCallInstance:
         self.request = MockSIPRequest(caller_name, caller_number)
         self.state = self
 
+        self.answered_event = asyncio.Event()
+        self.ended_event = asyncio.Event()
+
     @property
     def name(self):
         if self._engine.active_call_id == self._id:
@@ -64,7 +67,7 @@ class MediaEngine:
         self.heartbeat_thread = None
         self.ctrl_listener_thread = None
         
-        self.pbx_to_ai_queue = queue.Queue() 
+        self.pbx_to_ai_queue = asyncio.Queue() 
         self.tx_buffer = bytearray()
         self.tx_lock = threading.Lock()
 
@@ -169,10 +172,14 @@ class MediaEngine:
 
         elif ev_type == "CALL_ESTABLISHED" and call_id == self.active_call_id:
             self.media_active = True
+            if self.active_call:
+                self.main_loop.call_soon_threadsafe(self.active_call.answered_event.set)
 
         elif ev_type == "CALL_CLOSED" and call_id == self.active_call_id:
             print(f"[MediaEngine] Call tracking session terminated.")
             self.media_active = False
+            if self.active_call:
+                self.main_loop.call_soon_threadsafe(self.active_call.ended_event.set)
             self.active_call = None
             self.active_call_id = None
 
@@ -224,7 +231,11 @@ class MediaEngine:
         return self.active_call
 
     def engage_outbound_media(self):
-        with self.pbx_to_ai_queue.mutex: self.pbx_to_ai_queue.queue.clear()
+        while not self.pbx_to_ai_queue.empty():
+            try:
+                self.pbx_to_ai_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
         with self.tx_lock: self.tx_buffer.clear()
         self._is_running = True
         self.media_active = True
@@ -234,7 +245,11 @@ class MediaEngine:
 
     def answer_call(self, call):
         self._send_cmd("accept")
-        with self.pbx_to_ai_queue.mutex: self.pbx_to_ai_queue.queue.clear()
+        while not self.pbx_to_ai_queue.empty():
+            try:
+                self.pbx_to_ai_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
         with self.tx_lock: self.tx_buffer.clear()
         self._is_running = True
         self.media_active = True
@@ -261,7 +276,7 @@ class MediaEngine:
         def audio_callback(indata, outdata, frames, time_info, status):
             # --- RX PHASE: PulseAudio -> AI ---
             try:
-                self.pbx_to_ai_queue.put_nowait(bytes(indata))
+                self.main_loop.call_soon_threadsafe(self.pbx_to_ai_queue.put_nowait, bytes(indata))
             except queue.Full:
                 pass
 

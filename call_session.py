@@ -116,19 +116,19 @@ class CallSession:
         self.engine.drop_call()
 
     async def drain_audio_and_drop_call(self):
-        """Dynamically waits for the TX buffer to empty, accounting for delayed AI chunks."""
+        """Drains audio based on API turn status rather than arbitrary silence."""
         print("[CallSession] Engaging dynamic audio drain...")
         
-        silence_cycles = 0
-        # Wait for 1.5 seconds of CONTINUOUS silence (15 consecutive empty cycles)
-        while silence_cycles < 15:
-            if len(self.engine.tx_buffer) > 0:
-                silence_cycles = 0  # Reset the clock! AI sent a late chunk.
-            else:
-                silence_cycles += 1
-            await asyncio.sleep(0.1)
+        # 1. Wait for Gemini to finish generating all audio chunks over the WebSocket
+        if self.gemini_client and self.gemini_client.is_connected:
+            while self.gemini_client.ai_speaking_event.is_set():
+                await asyncio.sleep(0.05)
+                
+        # 2. Wait for the local PulseAudio transmission buffer to physically empty
+        while len(self.engine.tx_buffer) > 0:
+            await asyncio.sleep(0.05)
         
-        print("[CallSession] Stream continuously silent. Hanging up.")
+        print("[CallSession] Turn complete and playback stream empty. Hanging up.")
         self.drop_call()
 
     async def trigger_summary(self, reason):

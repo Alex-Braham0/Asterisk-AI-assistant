@@ -19,6 +19,7 @@ class GeminiClient:
         self.is_connected = False
         self.summary_requested = False
         self.tool_call_pending = False
+        self.ai_speaking_event = asyncio.Event()
 
     def _log(self, msg):
         timestamp = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
@@ -89,7 +90,7 @@ class GeminiClient:
                 continue
 
             try:
-                pcm_8k = self.pbx_to_ai_queue.get_nowait()
+                pcm_8k = await self.pbx_to_ai_queue.get() 
                 audio_buffer.extend(pcm_8k)
                 
                 if len(audio_buffer) >= 1600:
@@ -128,6 +129,9 @@ class GeminiClient:
                 # 1. Handle AUDIO and TEXT
                 if "serverContent" in data:
                     content = data["serverContent"]
+
+                    if content.get("turnComplete"):
+                        self.ai_speaking_event.clear()
                     
                     if content.get("interrupted"):
                         self._log("[Gemini] User Interrupted. Flushing audio buffer.")
