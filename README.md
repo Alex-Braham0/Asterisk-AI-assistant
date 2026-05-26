@@ -1,91 +1,105 @@
-# Gemini SIP/RTP Voice Agent ("Winston")
+# 🌟 Winston: Gemini SIP/RTP Voice Agent
 
-A real-time, bidirectional voice bridge connecting legacy telephony PBX systems (SIP/RTP) directly to Google's **Gemini 2.5 Flash Native Audio** model via the Live API WebSocket (v1beta). 
+[![Code Coverage](https://img.shields.io/badge/Code-Coverage-75%2B-blue.svg)](./coverage_report.html)
+[![API Level](https://img.shields.io/badge/API-Gemini%202.5-red.svg)]()
+[![Architecture](https://img.shields.io/badge/Architecture-Async%2FStateMachine-blue.svg)]()
 
-This project allows a user to dial a standard SIP extension and have a natural, low-latency, spoken conversation with an AI agent capable of real-time interruption, dynamic tool calling, outbound dialing, and long-term memory.
+A real-time, bidirectional voice bridge connecting legacy telephony PBX systems (SIP/RTP) directly to Google's **Gemini 2.5 Flash Native Audio** model via the Live API WebSocket.
 
-## 🏗️ Architecture
+This project brings AI conversational intelligence into the traditional telephony world. It allows a user to dial a standard SIP extension and have a natural, low-latency, spoken conversation with an AI agent capable of:
 
-The system bridges two fundamentally different concurrency domains—synchronous 20ms telephony heartbeats and asynchronous WebSocket bursts—using a modular, Service-Oriented Object Architecture.
+*   📞 **Native Audio-to-Audio:** Real-time dialogue without relying on slower STT/TTS intermediaries.
+*   🧠 **Contextual Memory:** Using vector databases (ChromaDB) to remember key topics and user preferences over multiple calls.
+*   🗓️ **Proactive Scheduling:** Scheduling and executing callbacks (e.g., "Remind me to call Dad tomorrow at 5 PM") directly via SIP.
+*   🛠️ **Function Calling:** Leveraging advanced Gemini tool-use capabilities (e.g., checking weather, looking up directory numbers).
 
-* **`app.py` (The Orchestrator):** Bootstraps the application, runs the asynchronous background worker loop for scheduled tasks, and spins up independent session state machines for incoming and outbound calls.
-* **`pbx_vocal.py` (The Media Engine):** A wrapper around `pyVoIP`. Manages SIP registration and the strict 20ms background threads required to maintain the RTP UDP stream. 
-* **`call_session.py` (The State Machine):** Manages the lifecycle of a single phone call. Negotiates the AI handshake, wires the audio queues, handles pre-warming to eliminate connection latency, and manages disconnections.
-* **`gemini_client.py` (The Transport Layer):** Maintains the WebSocket connection to Google. Handles audio downsampling, aliasing prevention, and delegates all JSON tool payloads to the registry.
-* **`tool_registry.py` (The Business Logic):** A centralized hub defining the AI's capabilities (e.g., checking weather, scheduling wake-up calls, routing to extensions).
-* **`database_manager.py` (The Brain):** Manages a hybrid data layer: SQLite for deterministic routing (Rooms, People, Tasks) and ChromaDB (Vector DB) for semantic context and long-term memory.
-* **`context_builder.py` (The Persona):** Dynamically generates context-aware system prompts based on call direction, caller ID, and the scheduled task context.
-* **`sync_pbx.py` (The Directory Sync):** Connects directly to the FreePBX MySQL database on boot to automatically map live PBX extensions to the AI's local SQLite routing tables.
+---
 
-## ✨ Current Features
+## 🏗️ Architecture Overview (The Big Picture)
 
-* **Native Audio-to-Audio:** Direct spoken conversation without intermediary Speech-to-Text (STT) or Text-to-Speech (TTS) latency.
-* **Proactive Outbound Dialing:** An asynchronous background worker that executes scheduled callbacks and wake-up calls with full context injection.
-* **Smart Answering Machine Detection:** Native AI audio analysis allows the agent to instantly detect human pickups vs. voicemail greetings without relying on clunky DSP silence-detection heuristics.
-* **Live FreePBX Synchronization:** Seamlessly reads Asterisk extension directories to automatically populate the agent's location and routing tables.
-* **API Integrations:** Asynchronous API fetching (via `aiohttp`) for real-time data like OpenWeatherMap forecasts.
-* **Voice Activity Detection (VAD):** The AI instantly stops speaking and flushes its transmission buffer if the human interrupts it.
-* **Post-Call Summarization:** Automatically forces the AI to output a structured JSON payload of action items and key topics the moment the call ends.
+The system is a highly modular, Service-Oriented Object Architecture that manages two complex, opposing concurrency domains: the **synchronous 20ms telephony heartbeat** (RTP/SIP) and the **asynchronous WebSocket stream** (Gemini/API).
 
-## 🚀 Prerequisites
+| Component | File | Primary Responsibility | Interaction Domain |
+| :--- | :--- | :--- | :--- |
+| **Orchestrator** | `app.py` | The central control loop. Manages the lifecycle of calls, initializes the engine, and runs the background task scheduler. | Orchestration/Async |
+| **Media Engine** | `pbx_vocal.py` | The SIP/RTP interface. Manages the background threads, monitors the Baresip event stream, and bridges the physical audio streams (PulseAudio <-> UDP). | Real-time/Audio |
+| **Call Session** | `call_session.py` | The state machine. Handles the full lifecycle of a call (setup, run, hangup), manages the handover between the Media Engine and the AI Client. | State Management |
+| **Gemini Client** | `gemini_client.py` | The external communication layer. Handles WebSocket connection, audio chunk compression (24kHz -> 8kHz), and continuous streaming to/from Gemini. | Cloud/Networking |
+| **Tool Registry** | `tool_registry.py` | The centralized business logic hub. Defines all available functions for Gemini and executes their associated logic (e.g., `check_weather`, `schedule_outbound_call`). | Business Logic/APIs |
+| **DB Manager** | `database_manager.py` | The hybrid persistence layer. Uses **SQLite** for deterministic routing (Directory, Tasks) and **ChromaDB** for semantic memory (Context). | Data Persistence |
+| **Context Builder**| `context_builder.py`| Generates the initial, highly constrained system prompt used to guide the AI's persona and knowledge during the session. | Prompt Engineering |
+| **Sync PBX** | `sync_pbx.py` | Connects to the live FreePBX MySQL database at startup to populate the agent's internal directories and scheduling tables. | Initialization/Sync |
 
-* **Python 3.11+**
-* A local PBX (e.g., FreePBX, Asterisk) with MySQL remote read permissions enabled for the script's host IP.
-* A Google Gemini API Key.
-* An OpenWeatherMap API Key.
+---
 
-## 🛠️ Installation & Setup
+## ✨ Key Features
 
-**1. Clone the repository and navigate to the directory:**
-```bash
-git clone [https://github.com/yourusername/gemini-sip-agent.git](https://github.com/yourusername/gemini-sip-agent.git)
-cd gemini-sip-agent
-```
+*   **High-Fidelity Conversation:** Direct spoken conversation with minimal latency by using real-time audio streaming (no intermediary STT/TTS latency).
+*   **Autonomous Calling:** An asynchronous background worker continuously monitors the database for scheduled tasks (wake-up calls, follow-ups) and initiates outbound calls automatically.
+*   **Smart Call Handling:** Detects and responds to non-human sounds (e.g., voicemail greetings) to maintain a seamless experience.
+*   **API Integration:** Real-time data fetching (e.g., OpenWeatherMap) that is naturally woven into the conversation.
+*   **Guided Conversation:** Contextual prompt generation ensures the AI understands *who* the user is speaking to, *where* they are calling from, and *what* the call's objective is.
 
-**2. Create and activate a virtual environment:**
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
+## 🛠️ Getting Started
 
-**3. Install the required dependencies:**
-```bash
-pip install -r requirements.txt
-```
+Follow these steps to get the system running.
 
-## ⚙️ Configuration
+### 🚀 Prerequisites
 
-Create a file named `config.json` in the root directory. Update it with your specific SIP credentials, FreePBX MySQL credentials, and API keys:
+*   **Python:** Python 3.11+ is required.
+*   **PBX:** A local PBX system (e.g., FreePBX, Asterisk) must be running and accessible.
+*   **Database Access:** The script's host IP must have remote read access to the FreePBX MySQL database.
+*   **API Keys:** You need a Google Gemini API Key and an OpenWeatherMap API Key.
 
-```json
-{
-    "sip_ip": "192.168.1.100", 
-    "sip_port": 5060, 
-    "my_ip": "192.168.1.98",
-    "username": "1001", 
-    "password": "your_sip_password",
-    "gemini_api_key": "YOUR_GEMINI_API_KEY",
-    "openweathermap_api_key": "YOUR_OWM_API_KEY",
-    "freepbx_db_ip": "192.168.1.100",
-    "freepbx_db_user": "pbxsync",
-    "freepbx_db_pass": "your_mysql_password",
-    "system_prompt": "You are a helpful phone assistant..."
-}
-```
-*(Note: `my_ip` must be the explicit IPv4 address of the machine running the script to prevent FreePBX from interpreting `0.0.0.0` as a SIP hold request).*
+### ⚙️ Installation & Setup
 
-## 📞 Usage
+1.  **Clone and Setup:**
+    ```bash
+    git clone [https://github.com/yourusername/gemini-sip-agent.git]
+    cd gemini-sip-agent
+    ```
+2.  **Virtual Environment:**
+    ```bash
+    python -m venv venv
+    source venv/bin/activate  # On Windows: venv\Scripts\activate
+    ```
+3.  **Install Dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+4.  **Configuration:**
+    Create a file named `config.json` in the root directory and populate it with your credentials.
+    ```json
+    {
+        "sip_ip": "192.168.1.100", 
+        "sip_port": 5060, 
+        "my_ip": "192.168.1.98",
+        "username": "1001", 
+        "password": "your_sip_password",
+        "gemini_api_key": "YOUR_GEMINI_API_KEY",
+        "openweathermap_api_key": "YOUR_OWM_API_KEY",
+        "freepbx_db_ip": "192.168.1.100",
+        "freepbx_db_user": "pbxsync",
+        "freepbx_db_pass": "your_mysql_password",
+        "system_prompt": "You are a helpful phone assistant..."
+    }
+    ```
+    > 💡 **Important:** `my_ip` must be the explicit IPv4 address of the machine running the script.
 
-Start the orchestrator:
+### 📞 Usage
+
+Start the orchestration loop:
 
 ```bash
 python app.py
 ```
 
-You should see the console output indicating the FreePBX directory sync is complete, the SIP extension is registered, and the background task worker is engaged. Dial the configured extension to begin.
+The console will confirm the FreePBX directory synchronization, SIP registration, and the background worker activation. Dial the configured extension to begin.
 
-## 🗺️ Roadmap / Future Enhancements
+---
 
-* **Agentic Framework Integration:** Implementation of OpenClaw or n8n webhooks to allow the AI to interact with smart home devices, IoT hardware, and complex workflows.
-* **Multi-Agent Summary Pipeline:** Piping post-call summaries to a secondary, cheaper text-based LLM to automatically extract facts and inject them into ChromaDB for autonomous long-term memory building.
-* **SIP Trunking & Multi-Channel:** Refactoring the RTP media engine with `multiprocessing` to handle multiple concurrent calls without hitting the Python GIL bottleneck.
+## 📅 Roadmap (Future Capabilities)
+
+*   **Agentic Integration:** Connecting to complex, external web services (e.g., OpenClaw, n8n) to allow the AI to interact with smart home devices or complex workflows.
+*   **Memory Enhancement:** Implementing a multi-agent pipeline to automatically summarize post-call actions and inject high-value facts into ChromaDB for persistent, long-term memory building.
+*   **Scalability:** Refactoring the RTP media engine using `multiprocessing` to handle multiple concurrent calls without GIL bottlenecks.

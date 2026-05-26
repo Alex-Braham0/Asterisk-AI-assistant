@@ -1,3 +1,5 @@
+"PULSE_SINK=Baresip_Tx PULSE_SOURCE=Baresip_Rx.monitor python app.py"
+
 import asyncio
 import sys
 import json

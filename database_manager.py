@@ -1,16 +1,23 @@
 import sqlite3
-import chromadb
 import time
 import json
+import os
+import asyncio
 
 class DatabaseManager:
-    def __init__(self, sqlite_path="pbx_core.db", chroma_path="./chroma_data"):
+    def __init__(self, sqlite_path="pbx_core.db", memory_dir="./memory_files", spool_dir="./call_summaries"):
         self.sql_conn = sqlite3.connect(sqlite_path, check_same_thread=False)
         self.sql_conn.row_factory = sqlite3.Row
         self._init_sql_tables()
 
-        self.chroma_client = chromadb.PersistentClient(path=chroma_path)
-        self.pref_collection = self.chroma_client.get_or_create_collection(name="home_context")
+        # Initialize the flat file memory directory
+        self.memory_dir = memory_dir
+        os.makedirs(self.memory_dir, exist_ok=True)
+
+        self.spool_pending = os.path.join(spool_dir, "pending")
+        self.spool_processed = os.path.join(spool_dir, "processed")
+        os.makedirs(self.spool_pending, exist_ok=True)
+        os.makedirs(self.spool_processed, exist_ok=True)
 
     def _init_sql_tables(self):
         """Creates the flat Directory schema and the Task Queue."""
@@ -66,6 +73,36 @@ class DatabaseManager:
         return result['timezone'] if result else 'Europe/London'
 
     # --- SEMANTIC MEMORY & TASKS ---
+    
+    def get_extension_memory(self, extension):
+        """
+        Reads the associated MD file. 
+        Future-proofing: This currently assumes extension = user. 
+        Later, this can be split into get_user_memory() and get_device_memory().
+        """
+        filepath = os.path.join(self.memory_dir, f"{extension}.md")
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                # Enforce the 2000 character limit on retrieval
+                return f.read()[:2000]
+        return "No specific memory file exists for this user yet."
+
+    async def spool_call_summary(self, extension, summary_data):
+        """
+        Asynchronously writes the AI's summary payload to the pending queue 
+        for the Memory Manager AI to process later.
+        """
+        filename = f"{extension}_{int(time.time())}.json"
+        filepath = os.path.join(self.spool_pending, filename)
+        
+        # CRITICAL: Prevent blocking the audio event loop
+        await asyncio.to_thread(self._write_json, filepath, summary_data)
+        print(f"[Memory System] Spooled summary for Memory Manager: {filepath}")
+
+    def _write_json(self, filepath, data):
+        """Synchronous file writer executed in a background thread."""
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
     
     def save_context_fact(self, subject, fact_text):
         doc_id = f"{subject.replace(' ', '_')}_{int(time.time())}"

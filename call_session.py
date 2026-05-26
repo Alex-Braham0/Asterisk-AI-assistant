@@ -2,6 +2,8 @@ import asyncio
 from gemini_client import GeminiClient
 from tool_registry import ToolRegistry
 from context_builder import ContextBuilder
+import time
+import datetime
 
 class CallSession:
     def __init__(self, call, engine, config, db_manager):
@@ -16,6 +18,10 @@ class CallSession:
         self.direction = "inbound"
         
         self.tool_registry = ToolRegistry(self)
+
+        self.target_extension = "Unknown"
+        self.bridge_start_time = None
+        self.bridge_start_datetime = None
 
     async def setup_connection(self, direction="inbound", target_info=None):
         """Pre-warms the Gemini WebSocket connection before audio starts."""
@@ -35,13 +41,18 @@ class CallSession:
                 caller_number = str(target_info)
                 caller = f"Target: {caller_number}"
 
+        self.target_extension = caller_number
+
         caller_tz = self.db_manager.get_user_timezone(caller_number)
+
+        memory_content = self.db_manager.get_extension_memory(caller_number)
 
         dynamic_prompt = ContextBuilder.build_initial_prompt(
             self.config["system_prompt"], 
             direction=direction, 
             caller_info=caller,
-            user_timezone=caller_tz
+            user_timezone=caller_tz,
+            memory_content=memory_content
         )
 
         self.gemini_client = GeminiClient(
@@ -67,7 +78,11 @@ class CallSession:
             print("[CallSession] Error: Cannot bridge without a valid call object.")
             return
 
+        self.bridge_start_time = time.time()
+        self.bridge_start_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         if self.direction == "inbound":
+            time.sleep(2)
             self.engine.answer_call(self.call)
         else:
             self.engine.engage_outbound_media()
@@ -87,7 +102,13 @@ class CallSession:
         print("[CallSession] Call hung up by remote party.")
         if self.gemini_client.is_connected:
             await self.trigger_summary(reason="The user has hung up the phone.")
-            while self.gemini_client.is_connected:
+            
+            # CRITICAL FIX: Do not instantly terminate. 
+            # Wait for the AI to finish speaking/tool calling.
+            # We wait until the summary tool actually executes and closes the connection itself.
+            timeout = 10.0
+            start_time = asyncio.get_event_loop().time()
+            while self.gemini_client.is_connected and (asyncio.get_event_loop().time() - start_time) < timeout:
                 await asyncio.sleep(0.1)
 
         self.terminate_bridge()

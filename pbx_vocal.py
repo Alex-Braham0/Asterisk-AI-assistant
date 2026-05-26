@@ -158,17 +158,26 @@ class MediaEngine:
                 self.active_call_id = call_id
                 self.active_call._id = call_id
         
-        if ev_type in ["CALL_INCOMING", "CALL_LOCAL_SDP"] and event.get("direction") == "incoming":
+        if ev_type == "CALL_INCOMING" and event.get("direction") == "incoming":
+    
+            # Are we already talking to someone?
             if self.active_call is not None:
                 if self.active_call_id != call_id:
-                    self._send_cmd("hangup")
-                return
+                    # We are busy. Swallow the event and do absolutely nothing.
+                    print(f"[MediaEngine] Agent busy. Ignoring concurrent call {call_id}. Letting it ring.")
+                    return
+                    
+            # We are free. Lock the agent and track the new call.
             self.active_call_id = call_id
             self.media_active = False
-
             self.active_call = BaresipCallInstance(peer_name, peer_num, call_id, self)
+            
             print(f"[MediaEngine] Incoming call tracked: ID={call_id} from {peer_name} ({peer_num})")
             self.main_loop.call_soon_threadsafe(self.on_call_callback, self.active_call)
+
+        elif ev_type == "CALL_LOCAL_SDP" and event.get("direction") == "incoming":
+            if self.active_call_id == call_id:
+                print(f"[MediaEngine] Processing SDP for active call: {call_id}")
 
         elif ev_type == "CALL_ESTABLISHED" and call_id == self.active_call_id:
             self.media_active = True
@@ -258,7 +267,8 @@ class MediaEngine:
 
     def drop_call(self):
         # self.media_active = False
-        self._send_cmd("hangup")
+        if self.active_call != None:
+            self._send_cmd("hangup")
         self.active_call = None
         self.active_call_id = None
     

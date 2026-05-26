@@ -1,6 +1,9 @@
 import json
 import asyncio
 import aiohttp
+import datetime
+import zoneinfo
+import time
 
 class ToolRegistry:
     def __init__(self, session):
@@ -25,15 +28,35 @@ class ToolRegistry:
             },
             {
                 "name": "submit_call_summary",
-                "description": "DO NOT USE MANUALLY. Only use when explicitly commanded by the system.",
+                "description": "DO NOT USE MANUALLY. Only use when explicitly commanded by the system. Provide a highly detailed summary of the call to assist the Memory Manager AI.",
                 "parameters": {
                     "type": "OBJECT",
                     "properties": {
-                        "key_topics": {"type": "ARRAY", "items": {"type": "STRING"}},
-                        "action_items": {"type": "ARRAY", "items": {"type": "STRING"}},
-                        "user_sentiment": {"type": "STRING"}
+                        "detailed_transcript_summary": {
+                            "type": "STRING", 
+                            "description": "A comprehensive paragraph detailing exactly what happened, topics discussed, and decisions made."
+                        },
+                        "key_exchanges": {
+                            "type": "ARRAY", 
+                            "items": {"type": "STRING"},
+                            "description": "Crucial exact quotes formatted as a dialogue pair. Example: 'User: Can you write a poem? | Winston: Certainly, here is a poem...'"
+                        },
+                        "proposed_memory_updates": {
+                            "type": "ARRAY", 
+                            "items": {"type": "STRING"},
+                            "description": "Specific, actionable proposals for the Memory Manager AI to add, modify, or delete in the user's permanent memory file. Be explicit."
+                        },
+                        "action_items": {
+                            "type": "ARRAY", 
+                            "items": {"type": "STRING"}
+                        }
                     },
-                    "required": ["key_topics", "action_items"]
+                    "required": [
+                        "detailed_transcript_summary", 
+                        "key_exchanges",
+                        "proposed_memory_updates", 
+                        "action_items"
+                    ]
                 }
             },
             {
@@ -177,7 +200,27 @@ class ToolRegistry:
             return {"status": "success", "message": "SIP line disconnected. Awaiting summary execution."}
             
         elif name == "submit_call_summary":
-            print(f"\n--- Final Call Summary (JSON) ---\n{json.dumps(args, indent=2)}\n---------------------------------")
+            extension = getattr(self.session, 'target_extension', 'Unknown')
+            
+            # --- OVERWRITE/INJECT ACCURATE METADATA ---
+            if self.session.bridge_start_time:
+                duration_seconds = int(time.time() - self.session.bridge_start_time)
+                args["start_time"] = self.session.bridge_start_datetime
+                args["duration_seconds"] = duration_seconds
+            else:
+                args["start_time"] = "Unknown"
+                args["duration_seconds"] = 0
+                
+            args["extension"] = extension
+
+            user_tz = self.session.db_manager.get_user_timezone(extension)
+            args["timezone"] = user_tz
+
+            print(f"[ToolRegistry] Summary received. Queuing update for extension {extension} (Duration: {args.get('duration_seconds')}s)...")
+            
+            # Fire the non-blocking file save operation
+            asyncio.create_task(self.session.db_manager.spool_call_summary(extension, args))
+            
             self.session.drop_call()
             self.session.terminate_bridge()
             return None
@@ -202,9 +245,6 @@ class ToolRegistry:
             target = args.get("target_extension")
             scheduled_local_str = args.get("scheduled_time")
             context = args.get("context")
-            
-            import datetime
-            import zoneinfo
             
             try:
                 # 1. Get the specific timezone for this extension from the database
@@ -283,7 +323,6 @@ class ToolRegistry:
             url = f"http://api.openweathermap.org/data/2.5/weather?q={clean_location}&appid={api_key}&units=metric"
             
             try:
-                import aiohttp
                 async with aiohttp.ClientSession() as http_session:
                     async with http_session.get(url) as response:
                         if response.status == 200:
@@ -339,7 +378,6 @@ class ToolRegistry:
                 self.session.engine.transfer_call(target)
                 
                 # Request a final summary since Winston's job is done
-                import asyncio
                 asyncio.create_task(self.session.trigger_summary(
                     reason=f"Call transferred to {target}. Reason: {reason}"
                 ))
