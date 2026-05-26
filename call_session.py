@@ -45,7 +45,8 @@ class CallSession:
 
         caller_tz = self.db_manager.get_user_timezone(caller_number)
 
-        memory_content = self.db_manager.get_extension_memory(caller_number)
+        # Change this line:
+        memory_content = await self.db_manager.get_extension_memory(caller_number)
 
         dynamic_prompt = ContextBuilder.build_initial_prompt(
             self.config["system_prompt"], 
@@ -82,7 +83,7 @@ class CallSession:
         self.bridge_start_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if self.direction == "inbound":
-            time.sleep(2)
+            await asyncio.sleep(2)
             self.engine.answer_call(self.call)
         else:
             self.engine.engage_outbound_media()

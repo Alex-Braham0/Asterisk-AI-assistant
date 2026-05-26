@@ -1,8 +1,7 @@
-asyncio
-websockets
-numpy
-sounddevice
-pymysql
-google-generativeai
-watchdog
 aiohttp
+asyncio
+google-generativeai
+numpy
+pymysql
+sounddevice
+websockets

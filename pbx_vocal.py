@@ -52,8 +52,14 @@ class MediaEngine:
         self.on_call_callback = on_call_callback
         self.main_loop = asyncio.get_event_loop()
         
+        self.sip_ip = sip_ip
+        self.sip_port = sip_port
+
         self.ctrl_host = "127.0.0.1"
         self.ctrl_port = 4444
+
+        self.tx_ctrl_sock = None
+        self.tx_sock_lock = threading.Lock()
 
         # ALSA Device Mapping (Mirroring the Baresip config)
         self.alsa_rx_device = None#'Baresip_Rx.monitor' # Listens to Baresip's output
@@ -71,8 +77,23 @@ class MediaEngine:
         self.tx_buffer = bytearray()
         self.tx_lock = threading.Lock()
 
+    def _connect_tx_socket(self):
+        """Establishes or recovers the persistent transmission socket."""
+        with self.tx_sock_lock:
+            if self.tx_ctrl_sock:
+                try: self.tx_ctrl_sock.close()
+                except: pass
+            try:
+                self.tx_ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.tx_ctrl_sock.connect((self.ctrl_host, self.ctrl_port))
+                self.tx_ctrl_sock.settimeout(0.5)
+            except Exception as e:
+                print(f"[MediaEngine] Failed to connect persistent TX control socket: {e}")
+                self.tx_ctrl_sock = None
+
     def start(self):
         self._is_running = True
+        self._connect_tx_socket()  # Initialize TX socket on boot
         self.ctrl_listener_thread = threading.Thread(target=self._ctrl_listener_loop, daemon=True)
         self.ctrl_listener_thread.start()
         print(f"[MediaEngine] Baresip interface initialized for user: {self.username}")
@@ -81,25 +102,32 @@ class MediaEngine:
         self._is_running = False
         if self.active_call:
             self.drop_call()
+        if self.tx_ctrl_sock: self.tx_ctrl_sock.close()
         if self.heartbeat_thread:
             self.heartbeat_thread.join(timeout=2.0)
         if self.ctrl_listener_thread:
             self.ctrl_listener_thread.join(timeout=2.0)
 
     def _send_cmd(self, command, params=""):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((self.ctrl_host, self.ctrl_port))
-            payload = {"command": command.strip().replace('/', ''), "params": params.strip()}
-            json_payload = json.dumps(payload)
-            netstring_payload = f"{len(json_payload)}:{json_payload},"
-            s.sendall(netstring_payload.encode('utf-8'))
-            s.settimeout(0.5)
-            try: s.recv(2048)
-            except socket.timeout: pass
-            s.close()
-        except Exception as e:
-            print(f"[MediaEngine] Command send failure ({command}): {e}")
+        """Sends commands over the persistent TX socket."""
+        payload = {"command": command.strip().replace('/', ''), "params": params.strip()}
+        json_payload = json.dumps(payload)
+        netstring_payload = f"{len(json_payload)}:{json_payload},"
+
+        with self.tx_sock_lock:
+            if not self.tx_ctrl_sock:
+                self._connect_tx_socket()
+
+            if self.tx_ctrl_sock:
+                try:
+                    self.tx_ctrl_sock.sendall(netstring_payload.encode('utf-8'))
+                    try: 
+                        self.tx_ctrl_sock.recv(2048) # Clear buffer
+                    except socket.timeout: 
+                        pass
+                except Exception as e:
+                    print(f"[MediaEngine] Command send failure ({command}), dropping socket: {e}")
+                    self.tx_ctrl_sock = None # Force reconnect next time
 
     def _ctrl_listener_loop(self):
         while self._is_running:
@@ -214,7 +242,7 @@ class MediaEngine:
         if self.active_call is not None:
             print(f"[MediaEngine] Executing Blind Transfer to Extension: {target_extension}")
             # Baresip command for blind transfer is 'transfer <uri>'
-            sip_uri = f"sip:{target_extension}@192.168.1.200"
+            sip_uri = f"sip:{target_extension}@{self.sip_ip}"
             self._send_cmd("transfer", sip_uri)
             
             # The PBX will handle the routing and immediately drop our leg of the call.

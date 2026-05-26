@@ -74,16 +74,16 @@ class DatabaseManager:
 
     # --- SEMANTIC MEMORY & TASKS ---
     
-    def get_extension_memory(self, extension):
+    async def get_extension_memory(self, extension):
         """
-        Reads the associated MD file. 
-        Future-proofing: This currently assumes extension = user. 
-        Later, this can be split into get_user_memory() and get_device_memory().
+        Reads the associated MD file asynchronously to prevent blocking the event loop.
         """
         filepath = os.path.join(self.memory_dir, f"{extension}.md")
+        return await asyncio.to_thread(self._read_memory_sync, filepath)
+
+    def _read_memory_sync(self, filepath):
         if os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as f:
-                # Enforce the 2000 character limit on retrieval
                 return f.read()[:2000]
         return "No specific memory file exists for this user yet."
 
@@ -103,15 +103,6 @@ class DatabaseManager:
         """Synchronous file writer executed in a background thread."""
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4)
-    
-    def save_context_fact(self, subject, fact_text):
-        doc_id = f"{subject.replace(' ', '_')}_{int(time.time())}"
-        self.pref_collection.add(
-            documents=[fact_text],
-            metadatas=[{"subject": subject}],
-            ids=[doc_id]
-        )
-        return True
     
     def schedule_callback(self, target_extension, scheduled_time, context):
         cursor = self.sql_conn.cursor()
