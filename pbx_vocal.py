@@ -58,9 +58,6 @@ class MediaEngine:
         self.ctrl_host = "127.0.0.1"
         self.ctrl_port = 4444
 
-        self.tx_ctrl_sock = None
-        self.tx_sock_lock = threading.Lock()
-
         # ALSA Device Mapping (Mirroring the Baresip config)
         self.alsa_rx_device = None#'Baresip_Rx.monitor' # Listens to Baresip's output
         self.alsa_tx_device = None#'Baresip_Tx' # Speaks to Baresip's input
@@ -77,23 +74,8 @@ class MediaEngine:
         self.tx_buffer = bytearray()
         self.tx_lock = threading.Lock()
 
-    def _connect_tx_socket(self):
-        """Establishes or recovers the persistent transmission socket."""
-        with self.tx_sock_lock:
-            if self.tx_ctrl_sock:
-                try: self.tx_ctrl_sock.close()
-                except: pass
-            try:
-                self.tx_ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.tx_ctrl_sock.connect((self.ctrl_host, self.ctrl_port))
-                self.tx_ctrl_sock.settimeout(0.5)
-            except Exception as e:
-                print(f"[MediaEngine] Failed to connect persistent TX control socket: {e}")
-                self.tx_ctrl_sock = None
-
     def start(self):
         self._is_running = True
-        self._connect_tx_socket()  # Initialize TX socket on boot
         self.ctrl_listener_thread = threading.Thread(target=self._ctrl_listener_loop, daemon=True)
         self.ctrl_listener_thread.start()
         print(f"[MediaEngine] Baresip interface initialized for user: {self.username}")
@@ -102,32 +84,32 @@ class MediaEngine:
         self._is_running = False
         if self.active_call:
             self.drop_call()
-        if self.tx_ctrl_sock: self.tx_ctrl_sock.close()
         if self.heartbeat_thread:
             self.heartbeat_thread.join(timeout=2.0)
         if self.ctrl_listener_thread:
             self.ctrl_listener_thread.join(timeout=2.0)
 
     def _send_cmd(self, command, params=""):
-        """Sends commands over the persistent TX socket."""
+        """Sends a command using a guaranteed fresh socket."""
         payload = {"command": command.strip().replace('/', ''), "params": params.strip()}
         json_payload = json.dumps(payload)
         netstring_payload = f"{len(json_payload)}:{json_payload},"
 
-        with self.tx_sock_lock:
-            if not self.tx_ctrl_sock:
-                self._connect_tx_socket()
-
-            if self.tx_ctrl_sock:
-                try:
-                    self.tx_ctrl_sock.sendall(netstring_payload.encode('utf-8'))
-                    try: 
-                        self.tx_ctrl_sock.recv(2048) # Clear buffer
-                    except socket.timeout: 
-                        pass
-                except Exception as e:
-                    print(f"[MediaEngine] Command send failure ({command}), dropping socket: {e}")
-                    self.tx_ctrl_sock = None # Force reconnect next time
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1.0)
+                s.connect((self.ctrl_host, self.ctrl_port))
+                s.sendall(netstring_payload.encode('utf-8'))
+                
+                # Force wait for a response to confirm Baresip processed it
+                response = s.recv(2048)
+                if not response:
+                    print(f"[MediaEngine] Command '{command}' failed: Empty response (Baresip dropped connection).")
+                    return False
+                return True
+        except Exception as e:
+            print(f"[MediaEngine] Command '{command}' exception: {e}")
+            return False
 
     def _ctrl_listener_loop(self):
         while self._is_running:
