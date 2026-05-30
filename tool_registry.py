@@ -51,30 +51,21 @@ class ToolRegistry:
             },
             {
                 "name": "submit_call_summary",
-                "description": "DO NOT USE MANUALLY. Only use when explicitly commanded by the system. Provide a highly detailed summary of the call to assist the Memory Manager AI.",
+                "description": "DO NOT USE MANUALLY. Use when commanded by the system. Provide data for the Memory Manager AI.",
                 "parameters": {
                     "type": "OBJECT",
                     "properties": {
-                        "detailed_transcript_summary": {
+                        "call_synopsis": {
                             "type": "STRING", 
-                            "description": "A comprehensive paragraph detailing exactly what happened, topics discussed, and decisions made."
-                        },
-                        "key_exchanges": {
-                            "type": "ARRAY", 
-                            "items": {"type": "STRING"},
-                            "description": "Crucial exact quotes formatted as a dialogue pair. Example: 'User: Can you write a poem? | Winston: Certainly, here is a poem...'"
+                            "description": "A very brief 1-2 sentence summary of what occurred."
                         },
                         "proposed_memory_updates": {
                             "type": "ARRAY", 
                             "items": {"type": "STRING"},
-                            "description": "Specific, actionable proposals for the Memory Manager AI to add, modify, or delete in the user's permanent memory file. Be explicit."
-                        },
-                        "action_items": {
-                            "type": "ARRAY", 
-                            "items": {"type": "STRING"}
+                            "description": "Specific new facts to add to permanent memory. If nothing important was learned, output ['None']."
                         }
                     },
-                    "required": ["detailed_transcript_summary", "key_exchanges", "proposed_memory_updates", "action_items"]
+                    "required": ["call_synopsis", "proposed_memory_updates"]
                 }
             },
             {

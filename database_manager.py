@@ -121,10 +121,6 @@ class DatabaseManager:
 
     # --- SEMANTIC MEMORY & TASKS ---
 
-    async def get_extension_memory(self, extension):
-        filepath = os.path.join(self.memory_dir, f"{extension}.md")
-        return await asyncio.to_thread(self._read_memory_sync, filepath)
-
     def _read_memory_sync(self, filepath):
         if os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as f:

@@ -51,8 +51,9 @@ def process_memory_file(file_path: Path):
         updates = summary_data.get("proposed_memory_updates", [])
         details = summary_data.get("detailed_transcript_summary", "")
         
-        if not updates and not details:
-            print(f"[Memory Manager] No actionable data. Archiving.")
+        # FIX: If the live agent didn't propose specific updates, just archive the file and skip the API call.
+        if not updates or (len(updates) == 1 and "none" in updates[0].lower()):
+            print(f"[Memory Manager] No specific memory updates proposed. Archiving without rewrite.")
             shutil.move(str(file_path), str(PROCESSED_DIR / file_path.name))
             return
 
@@ -60,13 +61,15 @@ def process_memory_file(file_path: Path):
         current_memory = get_existing_memory(target_dir, entity_id)
 
         system_instruction = f"""
-You are the memory manager for an AI phone agent. Your job is to maintain a rolling Markdown profile of the user or physical hardware endpoint.
-You are the sole decision-maker on what to keep, what to prune, and how to format it.
+You are the memory manager for an AI phone agent. Your job is to update a rolling Markdown profile.
 
 RULES:
-1. STRICT LIMIT: The final output MUST be under {MAX_CHARS} characters. 
-2. RUTHLESS PRUNING: Delete older, trivial facts to make room for new ones.
-3. FORMATTING: Output ONLY the raw Markdown text. No conversational filler, no codeblocks (do not wrap in ```markdown).
+1. STRICT LIMIT: Output MUST be under {MAX_CHARS} characters.
+2. PRESERVATION: DO NOT delete existing facts unless they directly contradict the new data or you are forced to prune to stay under the character limit.
+3. FORMATTING: You must output ONLY raw Markdown. Group the information into these strict headers:
+   - ## Core Identity (Name, Timezone, fundamental static traits)
+   - ## Preferences (Likes, dislikes, communication style)
+   - ## Actionable Context (Ongoing tasks, recent important events)
 
 CURRENT MEMORY PROFILE:
 {current_memory}
@@ -75,7 +78,7 @@ NEW DATA TO INTEGRATE:
 Proposed Updates: {json.dumps(updates)}
 Call Context: {details}
 
-Rewrite the entire memory profile now.
+Output the newly updated Markdown profile now.
 """
         
         chat = client.chats.create(model="gemini-2.5-flash")
