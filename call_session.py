@@ -43,7 +43,25 @@ class CallSession:
 
         self.target_extension = caller_number
 
-        caller_tz = self.db_manager.get_user_timezone(caller_number)
+        endpoint_data = await self.db_manager.get_endpoint(caller_number)
+        
+        is_shared = False
+        memory_content = "No specific memory file exists yet."
+        caller_tz = "Europe/London"
+
+        if endpoint_data:
+            default_user_name = endpoint_data.get('default_user_name')
+            caller_tz = endpoint_data.get('default_timezone', 'Europe/London')
+            
+            if default_user_name:
+                # Personal phone: Load user memory
+                self.active_user_level = endpoint_data.get('access_level', 10)
+                memory_content = await self.db_manager.get_user_memory(default_user_name)
+            else:
+                # Shared phone: Load endpoint hardware memory & flag for identity check
+                is_shared = True
+                self.active_user_level = 0 # Guest until verified
+                memory_content = await self.db_manager.get_extension_memory(caller_number)
 
         # Change this line:
         memory_content = await self.db_manager.get_extension_memory(caller_number)

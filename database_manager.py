@@ -1,16 +1,17 @@
-import sqlite3
+import asyncpg
+import asyncio
 import time
 import json
 import os
-import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    def __init__(self, sqlite_path="pbx_core.db", memory_dir="./memory_files", spool_dir="./call_summaries"):
-        self.sql_conn = sqlite3.connect(sqlite_path, check_same_thread=False)
-        self.sql_conn.row_factory = sqlite3.Row
-        self._init_sql_tables()
-
-        # Initialize the flat file memory directory
+    def __init__(self, db_url="postgres://postgres:postgres@localhost:5432/asterisk_ai", memory_dir="./memory_files", spool_dir="./call_summaries"):
+        self.db_url = db_url
+        self.pool = None
+        
         self.memory_dir = memory_dir
         os.makedirs(self.memory_dir, exist_ok=True)
 
@@ -19,65 +20,106 @@ class DatabaseManager:
         os.makedirs(self.spool_pending, exist_ok=True)
         os.makedirs(self.spool_processed, exist_ok=True)
 
-    def _init_sql_tables(self):
-        """Creates the flat Directory schema and the Task Queue."""
-        cursor = self.sql_conn.cursor()
-        
-        # A single flat Directory table mirroring FreePBX
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Directory (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                extension TEXT NOT NULL UNIQUE,
-                display_name TEXT NOT NULL,
-                timezone TEXT DEFAULT 'Europe/London'
-            )
-        ''')
+    async def connect(self):
+        if not self.pool:
+            self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=10)
+            await self._init_sql_tables()
 
-        # The Unified Task Queue
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS Tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_type TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                scheduled_time DATETIME NOT NULL,
-                status TEXT DEFAULT 'pending'
-            )
-        ''')
-        self.sql_conn.commit()
+    async def disconnect(self):
+        if self.pool:
+            await self.pool.close()
+
+    async def _init_sql_tables(self):
+        schema = """
+        CREATE TABLE IF NOT EXISTS Users (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            current_timezone VARCHAR(100) DEFAULT 'Europe/London',
+            access_level INT DEFAULT 10,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS Endpoints (
+            extension VARCHAR(50) PRIMARY KEY,
+            display_name VARCHAR(255),
+            is_active BOOLEAN DEFAULT TRUE,
+            default_timezone VARCHAR(100) DEFAULT 'Europe/London'
+        );
+
+        CREATE TABLE IF NOT EXISTS Endpoint_Users (
+            extension VARCHAR(50) REFERENCES Endpoints(extension) ON DELETE CASCADE,
+            user_id INT REFERENCES Users(id) ON DELETE CASCADE,
+            is_default BOOLEAN DEFAULT FALSE,
+            PRIMARY KEY (extension, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS Tasks (
+            id SERIAL PRIMARY KEY,
+            task_type VARCHAR(100) NOT NULL,
+            payload TEXT NOT NULL,
+            scheduled_time TIMESTAMP NOT NULL,
+            status VARCHAR(50) DEFAULT 'pending'
+        );
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(schema)
 
     # --- DIRECTORY LOGIC ---
 
-    def get_full_directory(self):
-        """Returns the entire phonebook."""
-        cursor = self.sql_conn.cursor()
-        cursor.execute('SELECT extension, display_name FROM Directory')
-        return [dict(row) for row in cursor.fetchall()]
+    async def get_full_directory(self):
+        async with self.pool.acquire() as conn:
+            records = await conn.fetch('SELECT extension, display_name FROM Endpoints WHERE is_active = TRUE')
+            return [dict(r) for r in records]
 
-    def lookup_extension(self, search_name):
-        """Fuzzy searches for an extension by its display name."""
-        cursor = self.sql_conn.cursor()
-        cursor.execute('''
+    async def lookup_extension(self, search_name):
+        query = """
             SELECT extension, display_name 
-            FROM Directory 
-            WHERE display_name LIKE ?
-        ''', (f"%{search_name}%",))
-        
-        row = cursor.fetchone()
-        return dict(row) if row else None
+            FROM Endpoints 
+            WHERE display_name ILIKE $1 AND is_active = TRUE
+            LIMIT 1
+        """
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow(query, f"%{search_name}%")
+            return dict(record) if record else None
+
+    async def get_user_timezone(self, target_id, is_user=False):
+        """Hierarchy: Check User timezone, fallback to Endpoint timezone."""
+        async with self.pool.acquire() as conn:
+            if is_user:
+                val = await conn.fetchval("SELECT current_timezone FROM Users WHERE id = $1", int(target_id))
+                return val or 'Europe/London'
+            else:
+                query = """
+                    SELECT COALESCE(u.current_timezone, e.default_timezone, 'Europe/London')
+                    FROM Endpoints e
+                    LEFT JOIN Endpoint_Users eu ON e.extension = eu.extension AND eu.is_default = TRUE
+                    LEFT JOIN Users u ON eu.user_id = u.id
+                    WHERE e.extension = $1
+                """
+                val = await conn.fetchval(query, str(target_id))
+                return val or 'Europe/London'
+
+    # --- SYNC UPSERTS ---
     
-    def get_user_timezone(self, extension):
-        """Fetches the IANA timezone for a specific extension."""
-        cursor = self.sql_conn.cursor()
-        cursor.execute("SELECT timezone FROM Directory WHERE extension = ?", (extension,))
-        result = cursor.fetchone()
-        return result['timezone'] if result else 'Europe/London'
+    async def upsert_endpoint(self, extension: str, display_name: str):
+        query = """
+            INSERT INTO Endpoints (extension, display_name, is_active)
+            VALUES ($1, $2, TRUE)
+            ON CONFLICT (extension) 
+            DO UPDATE SET display_name = EXCLUDED.display_name, is_active = TRUE;
+        """
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, str(extension), display_name)
+            
+    async def deactivate_missing_endpoints(self, active_extensions: list):
+        if not active_extensions: return
+        query = "UPDATE Endpoints SET is_active = FALSE WHERE extension != ALL($1::varchar[])"
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, active_extensions)
 
     # --- SEMANTIC MEMORY & TASKS ---
-    
+
     async def get_extension_memory(self, extension):
-        """
-        Reads the associated MD file asynchronously to prevent blocking the event loop.
-        """
         filepath = os.path.join(self.memory_dir, f"{extension}.md")
         return await asyncio.to_thread(self._read_memory_sync, filepath)
 
@@ -88,63 +130,44 @@ class DatabaseManager:
         return "No specific memory file exists for this user yet."
 
     async def spool_call_summary(self, extension, summary_data):
-        """
-        Asynchronously writes the AI's summary payload to the pending queue 
-        for the Memory Manager AI to process later.
-        """
         filename = f"{extension}_{int(time.time())}.json"
         filepath = os.path.join(self.spool_pending, filename)
-        
-        # CRITICAL: Prevent blocking the audio event loop
         await asyncio.to_thread(self._write_json, filepath, summary_data)
-        print(f"[Memory System] Spooled summary for Memory Manager: {filepath}")
 
     def _write_json(self, filepath, data):
-        """Synchronous file writer executed in a background thread."""
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4)
-    
-    def schedule_callback(self, target_extension, scheduled_time, context):
-        cursor = self.sql_conn.cursor()
-        payload = json.dumps({
-            "target_extension": target_extension, 
-            "context": context
-        })
-        cursor.execute('''
-            INSERT INTO Tasks (task_type, payload, scheduled_time)
-            VALUES (?, ?, ?)
-        ''', ('outbound_call', payload, scheduled_time))
-        self.sql_conn.commit()
+
+    async def schedule_callback(self, target_extension, scheduled_time, context):
+        payload = json.dumps({"target_extension": target_extension, "context": context})
+        query = "INSERT INTO Tasks (task_type, payload, scheduled_time) VALUES ($1, $2, $3::timestamp)"
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, 'outbound_call', payload, scheduled_time)
         return True
-    
-    def get_pending_calls(self, target_extension):
-        """Retrieves a list of pending calls for a specific extension."""
-        cursor = self.sql_conn.cursor()
-        cursor.execute('''
+
+    async def get_pending_calls(self, target_extension):
+        query = """
             SELECT id, scheduled_time, payload
             FROM Tasks 
             WHERE task_type = 'outbound_call' 
             AND status = 'pending' 
-            AND payload LIKE ?
-        ''', (f'%"target_extension": "{target_extension}"%',))
-        
-        results = []
-        for row in cursor.fetchall():
-            payload_data = json.loads(row['payload'])
-            results.append({
-                "task_id": row['id'],
-                "scheduled_time": row['scheduled_time'],
-                "context": payload_data.get('context', 'No context')
-            })
-        return results
+            AND payload LIKE $1
+        """
+        async with self.pool.acquire() as conn:
+            records = await conn.fetch(query, f'%"target_extension": "{target_extension}"%')
+            results = []
+            for row in records:
+                payload_data = json.loads(row['payload'])
+                results.append({
+                    "task_id": row['id'],
+                    "scheduled_time": str(row['scheduled_time']),
+                    "context": payload_data.get('context', 'No context')
+                })
+            return results
 
-    def cancel_task_by_id(self, task_id):
-        """Surgically cancels a specific task by its primary key ID."""
-        cursor = self.sql_conn.cursor()
-        cursor.execute('''
-            UPDATE Tasks 
-            SET status = 'cancelled' 
-            WHERE id = ? AND status = 'pending'
-        ''', (task_id,))
-        self.sql_conn.commit()
-        return cursor.rowcount
+    async def cancel_task_by_id(self, task_id):
+        query = "UPDATE Tasks SET status = 'cancelled' WHERE id = $1 AND status = 'pending'"
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(query, int(task_id))
+            # asyncpg execute returns string like "UPDATE 1"
+            return int(result.split()[-1])

@@ -7,11 +7,34 @@ import time
 
 class ToolRegistry:
     def __init__(self, session):
-        """
-        Holds a reference to the active CallSession so tools can manipulate 
-        the call state (like hanging up) without knowing about the WebSocket.
-        """
         self.session = session
+        
+        # Define access level requirements for each tool (0=Guest, 10=Standard, 100=Admin)
+        self.tool_auth_requirements = {
+            "end_call": 0,
+            "submit_call_summary": 0,
+            "check_weather": 0,
+            "lookup_directory": 0,
+            "get_full_directory": 10,
+            "check_scheduled_calls": 10,
+            "cancel_scheduled_call": 10,
+            "schedule_outbound_call": 10,
+            "send_dtmf": 10,
+            "transfer_call": 0,
+            "schedule_wakeup_call": 10
+        }
+
+    def _check_auth(self, name):
+        """
+        Stub for evaluating access levels.
+        Assumes self.session.active_user_level exists (defaults to 10 for now).
+        """
+        required_level = self.tool_auth_requirements.get(name, 100)
+        user_level = getattr(self.session, 'active_user_level', 10)
+        
+        # Force allow everything for current build phase as requested
+        return True
+        # Future enforcement: return user_level >= required_level
 
     def get_declarations(self):
         return [
@@ -51,12 +74,7 @@ class ToolRegistry:
                             "items": {"type": "STRING"}
                         }
                     },
-                    "required": [
-                        "detailed_transcript_summary", 
-                        "key_exchanges",
-                        "proposed_memory_updates", 
-                        "action_items"
-                    ]
+                    "required": ["detailed_transcript_summary", "key_exchanges", "proposed_memory_updates", "action_items"]
                 }
             },
             {
@@ -183,12 +201,26 @@ class ToolRegistry:
                     },
                     "required": ["target_extension"]
                 }
+            },
+            {
+                "name": "set_active_user",
+                "description": "Call this immediately when a user states their name on a shared phone. It loads their personal memory profile and timezone.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "user_name": {"type": "STRING", "description": "The name of the user speaking."}
+                    },
+                    "required": ["user_name"]
+                }
             }
         ]
 
     async def execute_tool(self, name, args):
         """Executes the Python logic for a requested tool."""
         
+        if not self._check_auth(name):
+            return {"status": "failed", "message": f"Authorization denied for tool {name}."}
+
         if name == "end_call":
             reason = args.get("reason", "No reason provided")
             print(f"[ToolRegistry] AI initiated call termination. Reason: {reason}")
@@ -202,7 +234,6 @@ class ToolRegistry:
         elif name == "submit_call_summary":
             extension = getattr(self.session, 'target_extension', 'Unknown')
             
-            # --- OVERWRITE/INJECT ACCURATE METADATA ---
             if self.session.bridge_start_time:
                 duration_seconds = int(time.time() - self.session.bridge_start_time)
                 args["start_time"] = self.session.bridge_start_datetime
@@ -213,12 +244,11 @@ class ToolRegistry:
                 
             args["extension"] = extension
 
-            user_tz = self.session.db_manager.get_user_timezone(extension)
+            user_tz = await self.session.db_manager.get_user_timezone(extension)
             args["timezone"] = user_tz
 
             print(f"[ToolRegistry] Summary received. Queuing update for extension {extension} (Duration: {args.get('duration_seconds')}s)...")
             
-            # Fire the non-blocking file save operation
             asyncio.create_task(self.session.db_manager.spool_call_summary(extension, args))
             
             self.session.drop_call()
@@ -227,18 +257,15 @@ class ToolRegistry:
         
         elif name == "lookup_directory":
             raw_target = args.get("search_name", "")
-            
-            # --- BACKEND SANITIZATION ---
-            # Remove possessives like "'s" so "Ash's" becomes "Ash"
             clean_target = raw_target.lower().replace("'s", "").replace("room", "").strip()
             
-            result = self.session.db_manager.lookup_extension(clean_target)
+            result = await self.session.db_manager.lookup_extension(clean_target)
             if result:
                 return {"status": "success", "data": result}
             return {"status": "failed", "message": f"No endpoint found matching '{clean_target}'."}
 
         elif name == "get_full_directory":
-            directory = self.session.db_manager.get_full_directory()
+            directory = await self.session.db_manager.get_full_directory()
             return {"status": "success", "directory": directory}
 
         elif name == "schedule_outbound_call":
@@ -247,23 +274,18 @@ class ToolRegistry:
             context = args.get("context")
             
             try:
-                # 1. Get the specific timezone for this extension from the database
-                user_tz_str = self.session.db_manager.get_user_timezone(target)
+                user_tz_str = await self.session.db_manager.get_user_timezone(target)
                 local_tz = zoneinfo.ZoneInfo(user_tz_str)
                 
-                # 2. Parse the AI's string and attach the local timezone
                 naive_dt = datetime.datetime.strptime(scheduled_local_str, "%Y-%m-%d %H:%M:%S")
                 local_dt = naive_dt.replace(tzinfo=local_tz)
                 
-                # 3. Convert it to pure UTC
                 utc_dt = local_dt.astimezone(datetime.timezone.utc)
                 utc_str = utc_dt.strftime("%Y-%m-%d %H:%M:%S")
                 
                 print(f"[ToolRegistry] Translating Time: {scheduled_local_str} ({user_tz_str}) -> {utc_str} (UTC)")
                 
-                # 4. Save the UTC time to the database
-                # (Ensure your database manager method matches this name)
-                self.session.db_manager.schedule_callback(target, utc_str, context) 
+                await self.session.db_manager.schedule_callback(target, utc_str, context) 
                 
                 return {
                     "status": "success", 
@@ -275,15 +297,14 @@ class ToolRegistry:
         elif name == "check_scheduled_calls":
             target = str(args.get("target_extension", ""))
             
-            # Safety net: resolve name to number if hallucinated
             if not target.isdigit():
-                resolved = self.session.db_manager.lookup_extension(target)
+                resolved = await self.session.db_manager.lookup_extension(target)
                 if resolved:
                     target = resolved['extension']
                 else:
                     return {"status": "failed", "message": f"Could not find numeric extension for {target}."}
             
-            calls = self.session.db_manager.get_pending_calls(target)
+            calls = await self.session.db_manager.get_pending_calls(target)
             if calls:
                 return {"status": "success", "pending_calls": calls}
             else:
@@ -296,7 +317,7 @@ class ToolRegistry:
                 return {"status": "failed", "message": "task_id must be a valid integer."}
                 
             try:
-                cancelled_count = self.session.db_manager.cancel_task_by_id(task_id)
+                cancelled_count = await self.session.db_manager.cancel_task_by_id(task_id)
                 if cancelled_count > 0:
                     return {"status": "success", "message": f"Successfully cancelled task ID {task_id}."}
                 else:
@@ -308,8 +329,6 @@ class ToolRegistry:
             raw_location = args.get("location", "Cardiff")
             time_context = args.get("time_context")
             
-            # --- BACKEND SANITIZATION ---
-            # Force lowercase and strip common conversational fillers that break the API
             clean_location = raw_location.lower()
             fillers = [" town centre", " city centre", " downtown", " area", " central"]
             for filler in fillers:
@@ -347,11 +366,10 @@ class ToolRegistry:
             scheduled_time = args.get("scheduled_time")
             briefing = args.get("briefing_notes")
             
-            # We reuse the robust unified Tasks queue we built earlier!
             context = f"WAKE UP CALL. Itinerary/Briefing: {briefing}"
             
             try:
-                self.session.db_manager.schedule_callback(target, scheduled_time, context)
+                await self.session.db_manager.schedule_callback(target, scheduled_time, context)
                 return {
                     "status": "success", 
                     "message": f"Wake up call successfully scheduled for {scheduled_time}."
@@ -362,7 +380,6 @@ class ToolRegistry:
         elif name == "send_dtmf":
             digit = args.get("digit")
             try:
-                # Tell the MediaEngine to fire the command
                 self.session.engine.send_dtmf(digit)
                 return {"status": "success", "message": f"Successfully pressed {digit}."}
             except Exception as e:
@@ -374,15 +391,40 @@ class ToolRegistry:
             print(f"[ToolRegistry] AI initiated transfer to {target}. Reason: {reason}")
             
             try:
-                # Trigger the PBX transfer
                 self.session.engine.transfer_call(target)
                 
-                # Request a final summary since Winston's job is done
                 asyncio.create_task(self.session.trigger_summary(
                     reason=f"Call transferred to {target}. Reason: {reason}"
                 ))
                 return {"status": "success", "message": f"Transferring to {target} initiated."}
             except Exception as e:
                 return {"status": "failed", "message": f"Transfer failed: {e}"}
+            
+        elif name == "set_active_user":
+            user_name = args.get("user_name")
+            
+            # Fetch user from PostgreSQL
+            query = "SELECT id, access_level, current_timezone FROM Users WHERE name ILIKE $1 LIMIT 1"
+            async with self.session.db_manager.pool.acquire() as conn:
+                user_data = await conn.fetchrow(query, user_name)
+
+            if not user_data:
+                return {"status": "failed", "message": f"User '{user_name}' not found in database."}
+
+            # Elevate session access level
+            self.session.active_user_level = user_data['access_level']
+            
+            # Read user's markdown file
+            user_memory = await self.session.db_manager.get_user_memory(user_name)
+            
+            # Inject new context into the live stream
+            injection_text = (
+                f"IDENTITY CONFIRMED. Active User is now {user_name}. "
+                f"New Timezone is {user_data['current_timezone']}. "
+                f"USER MEMORY PROFILE: {user_memory}"
+            )
+            asyncio.create_task(self.session.gemini_client.send_system_event(injection_text))
+            
+            return {"status": "success", "message": f"Context switched to {user_name}."}
             
         return {"error": "Function not implemented."}
