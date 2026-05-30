@@ -1,5 +1,6 @@
 import datetime
 import zoneinfo
+from dateutil import parser
 from .base import BaseTool
 
 class ScheduleOutboundCall(BaseTool):
@@ -36,21 +37,30 @@ class ScheduleOutboundCall(BaseTool):
     }
 
     async def execute(self, session, args):
-        target = args["target_extension"]
+        raw_target = str(args["target_extension"]).strip()
         scheduled_local_str = args["scheduled_time"]
         
-        # Future-proofing: State checking logic goes here (e.g., is target DND?)
-        # if target_is_dnd and args["priority"] != "emergency":
-        #    return {"status": "failed", "message": "Target is DND."}
+        # 1. Target Resolution: Force Numeric
+        if not raw_target.isdigit():
+            resolved = await session.db_manager.lookup_extension(raw_target)
+            if resolved:
+                target = resolved['extension']
+                print(f"[Scheduling] Resolved name '{raw_target}' to extension {target}")
+            else:
+                return {"status": "failed", "message": f"Could not find a numeric extension for '{raw_target}'."}
+        else:
+            target = raw_target
         
         try:
+            # 2. Timezone & Flexible Parsing
             user_tz_str = await session.db_manager.get_user_timezone(target)
             local_tz = zoneinfo.ZoneInfo(user_tz_str)
-            naive_dt = datetime.datetime.strptime(scheduled_local_str, "%Y-%m-%d %H:%M:%S")
+            
+            # Use dateutil parser to handle whatever weird format the LLM throws at us
+            naive_dt = parser.parse(scheduled_local_str)
             local_dt = naive_dt.replace(tzinfo=local_tz)
             utc_dt = local_dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
             
-            # Note: Database schema needs updating to accept these new fields
             payload = {
                 "context": args["execution_context"],
                 "priority": args["priority"],

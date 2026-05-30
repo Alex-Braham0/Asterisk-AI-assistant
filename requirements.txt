@@ -1,6 +1,7 @@
 aiohttp
 asyncio
 google-generativeai
+google-genai
 numpy
 pymysql
 sounddevice

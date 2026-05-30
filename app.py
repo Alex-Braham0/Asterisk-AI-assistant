@@ -81,15 +81,10 @@ class SIPAgentOrchestrator:
 
         while True:
             try:
-                # Provide a naive datetime object representing current UTC time
                 now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-                
-                if heartbeat_counter % 2 == 0:
-                    pass 
                 heartbeat_counter += 1
                 
                 async with self.db_manager.pool.acquire() as conn:
-                    # Removed the $1::timestamp cast
                     task = await conn.fetchrow('''
                         SELECT id, task_type, payload 
                         FROM Tasks 
@@ -100,35 +95,36 @@ class SIPAgentOrchestrator:
                     if task:
                         task_id = task['id']
                         task_type = task['task_type']
-                        payload = json.loads(task['payload'])
                         
+                        # Set to processing immediately to prevent poison pills
                         await conn.execute("UPDATE Tasks SET status = 'processing' WHERE id = $1", task_id)
                         
-                        print(f"\n[Worker] ⚡ FIRING SCHEDULED TASK {task_id}: {task_type} at {now_utc}")
-                        
-                        if task_type == "outbound_call":
-                            target_ext = payload.get('target_extension')
-                            context = payload.get('context', 'No context')
-                            priority = payload.get('priority', 'normal')
+                        try:
+                            payload = json.loads(task['payload'])
+                            print(f"\n[Worker] ⚡ FIRING SCHEDULED TASK {task_id}: {task_type}")
                             
-                            # Prefix the context with priority instructions if needed
-                            if priority == 'emergency':
-                                context = f"[EMERGENCY OVERRIDE] {context}"
+                            if task_type == "outbound_call":
+                                target_ext = str(payload.get('target_extension', ''))
+                                context = payload.get('context', 'No context provided')
+                                priority = payload.get('priority', 'normal')
+                                
+                                if priority == 'emergency':
+                                    context = f"[EMERGENCY OVERRIDE] {context}"
+                                
+                                print(f"[Worker] Spawning outbound call to {target_ext}. Priority: {priority}")
+                                asyncio.create_task(self._initiate_outbound_call(target_ext, context))
+                                
+                                if payload.get('require_follow_up'):
+                                    print(f"[Worker] Task {task_id} requires follow-up. (Logic pending)")
+                                    
+                            await conn.execute("UPDATE Tasks SET status = 'completed' WHERE id = $1", task_id)
                             
-                            print(f"[Worker] Spawning outbound call to {target_ext}. Priority: {priority}")
-                            asyncio.create_task(self._initiate_outbound_call(target_ext, context))
+                        except json.JSONDecodeError:
+                            print(f"[Worker Error] Task {task_id} has corrupt JSON payload. Marking as failed.")
+                            await conn.execute("UPDATE Tasks SET status = 'failed' WHERE id = $1", task_id)
                             
-                            # If a follow-up is required, we will need to build the logic to parse the
-                            # resulting call summary and schedule a NEW task targeting the original initiator.
-                            if payload.get('require_follow_up'):
-                                print(f"[Worker] Task {task_id} requires follow-up. Awaiting summary resolution.")
-                                # Note: Follow-up logic requires parsing the pending directory, 
-                                # which will be implemented in a future iteration.
-                            
-                        await conn.execute("UPDATE Tasks SET status = 'completed' WHERE id = $1", task_id)
-                    
             except Exception as e:
-                print(f"[Worker Error] {e}")
+                print(f"[Worker DB Error] {e}")
                 
             await asyncio.sleep(5)
 
