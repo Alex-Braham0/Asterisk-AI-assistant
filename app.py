@@ -107,7 +107,23 @@ class SIPAgentOrchestrator:
                         print(f"\n[Worker] ⚡ FIRING SCHEDULED TASK {task_id}: {task_type} at {now_utc}")
                         
                         if task_type == "outbound_call":
-                            asyncio.create_task(self._initiate_outbound_call(payload['target_extension'], payload['context']))
+                            target_ext = payload.get('target_extension')
+                            context = payload.get('context', 'No context')
+                            priority = payload.get('priority', 'normal')
+                            
+                            # Prefix the context with priority instructions if needed
+                            if priority == 'emergency':
+                                context = f"[EMERGENCY OVERRIDE] {context}"
+                            
+                            print(f"[Worker] Spawning outbound call to {target_ext}. Priority: {priority}")
+                            asyncio.create_task(self._initiate_outbound_call(target_ext, context))
+                            
+                            # If a follow-up is required, we will need to build the logic to parse the
+                            # resulting call summary and schedule a NEW task targeting the original initiator.
+                            if payload.get('require_follow_up'):
+                                print(f"[Worker] Task {task_id} requires follow-up. Awaiting summary resolution.")
+                                # Note: Follow-up logic requires parsing the pending directory, 
+                                # which will be implemented in a future iteration.
                             
                         await conn.execute("UPDATE Tasks SET status = 'completed' WHERE id = $1", task_id)
                     

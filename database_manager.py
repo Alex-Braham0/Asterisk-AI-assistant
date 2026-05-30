@@ -136,9 +136,15 @@ class DatabaseManager:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4)
 
-    async def schedule_callback(self, target_extension, scheduled_time, context):
-        payload = json.dumps({"target_extension": target_extension, "context": context})
-        # Removed $3::timestamp
+    async def schedule_callback(self, target_extension, scheduled_time, payload_dict):
+        # Inject the target into the payload before stringifying
+        if isinstance(payload_dict, str):
+            # Fallback for legacy calls
+            payload = json.dumps({"target_extension": target_extension, "context": payload_dict})
+        else:
+            payload_dict["target_extension"] = target_extension
+            payload = json.dumps(payload_dict)
+            
         query = "INSERT INTO Tasks (task_type, payload, scheduled_time) VALUES ($1, $2, $3)"
         async with self.pool.acquire() as conn:
             await conn.execute(query, 'outbound_call', payload, scheduled_time)
@@ -157,10 +163,12 @@ class DatabaseManager:
             results = []
             for row in records:
                 payload_data = json.loads(row['payload'])
+                # 'context' could be in 'context' or 'execution_context' depending on the tool version used
+                context_str = payload_data.get('context', payload_data.get('execution_context', 'No context provided'))
                 results.append({
                     "task_id": row['id'],
                     "scheduled_time": str(row['scheduled_time']),
-                    "context": payload_data.get('context', 'No context')
+                    "context": context_str
                 })
             return results
 

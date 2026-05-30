@@ -1,6 +1,6 @@
 import asyncio
 from gemini_client import GeminiClient
-from tool_registry import ToolRegistry
+from tools import ToolRegistry
 from context_builder import ContextBuilder
 import time
 import datetime
