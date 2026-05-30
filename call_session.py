@@ -63,8 +63,9 @@ class CallSession:
                 self.active_user_level = 0 # Guest until verified
                 memory_content = await self.db_manager.get_extension_memory(caller_number)
 
-        # Change this line:
-        memory_content = await self.db_manager.get_extension_memory(caller_number)
+        else:
+            # Fallback if unknown endpoint
+            memory_content = await self.db_manager.get_extension_memory(caller_number)
 
         dynamic_prompt = ContextBuilder.build_initial_prompt(
             self.config["system_prompt"], 

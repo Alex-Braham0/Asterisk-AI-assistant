@@ -12,8 +12,10 @@ class DatabaseManager:
         self.db_url = db_url
         self.pool = None
         
-        self.memory_dir = memory_dir
-        os.makedirs(self.memory_dir, exist_ok=True)
+        self.memory_users_dir = os.path.join(memory_dir, "users")
+        self.memory_endpoints_dir = os.path.join(memory_dir, "endpoints")
+        os.makedirs(self.memory_users_dir, exist_ok=True)
+        os.makedirs(self.memory_endpoints_dir, exist_ok=True)
 
         self.spool_pending = os.path.join(spool_dir, "pending")
         self.spool_processed = os.path.join(spool_dir, "processed")
@@ -140,7 +142,8 @@ class DatabaseManager:
 
     async def schedule_callback(self, target_extension, scheduled_time, context):
         payload = json.dumps({"target_extension": target_extension, "context": context})
-        query = "INSERT INTO Tasks (task_type, payload, scheduled_time) VALUES ($1, $2, $3::timestamp)"
+        # Removed $3::timestamp
+        query = "INSERT INTO Tasks (task_type, payload, scheduled_time) VALUES ($1, $2, $3)"
         async with self.pool.acquire() as conn:
             await conn.execute(query, 'outbound_call', payload, scheduled_time)
         return True
@@ -171,3 +174,24 @@ class DatabaseManager:
             result = await conn.execute(query, int(task_id))
             # asyncpg execute returns string like "UPDATE 1"
             return int(result.split()[-1])
+        
+    async def get_endpoint(self, extension):
+        query = """
+            SELECT e.extension, e.display_name, e.default_timezone,
+                   eu.user_id, u.name as default_user_name, u.access_level
+            FROM Endpoints e
+            LEFT JOIN Endpoint_Users eu ON e.extension = eu.extension AND eu.is_default = TRUE
+            LEFT JOIN Users u ON eu.user_id = u.id
+            WHERE e.extension = $1
+        """
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow(query, str(extension))
+            return dict(record) if record else None
+
+    async def get_extension_memory(self, extension):
+        filepath = os.path.join(self.memory_endpoints_dir, f"{extension}.md")
+        return await asyncio.to_thread(self._read_memory_sync, filepath)
+
+    async def get_user_memory(self, user_name):
+        filepath = os.path.join(self.memory_users_dir, f"{user_name}.md")
+        return await asyncio.to_thread(self._read_memory_sync, filepath)

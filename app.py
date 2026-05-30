@@ -20,22 +20,26 @@ class SIPAgentOrchestrator:
                 json.dump({
                     "sip_ip": "192.168.1.100", 
                     "sip_port": 5060, 
+                    "my_ip": "192.168.1.98",
                     "username": "100", 
                     "password": "secretpassword",
                     "gemini_api_key": "YOUR_API_KEY",
+                    "openweathermap_api_key": "YOUR_OWM_API_KEY",
+                    "freepbx_db_ip": "192.168.1.100",
+                    "freepbx_db_user": "pbxsync",
+                    "freepbx_db_pass": "your_mysql_password",
+                    "postgres_url": "postgres://postgres:YOUR_ACTUAL_PASSWORD@localhost:5432/asterisk_ai",
                     "system_prompt": "You are a helpful phone assistant. Give concise answers."
                 }, f, indent=4)
             sys.exit(1)
 
-        self.db_manager = DatabaseManager()
-
-        synchronizer = PBXSynchronizer(self.config, self.db_manager)
-        synchronizer.run_sync()
-
+        # Grab the URL from config, falling back to the default if missing
+        pg_url = self.config.get("postgres_url", "postgres://postgres:postgres@localhost:5432/asterisk_ai")
+        self.db_manager = DatabaseManager(db_url=pg_url)
+        
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
 
-        # Initialize the SIP Media Engine
         self.engine = MediaEngine(
             self.config["sip_ip"], 
             self.config["sip_port"], 
@@ -45,12 +49,20 @@ class SIPAgentOrchestrator:
             my_ip=self.config["my_ip"],
         )
 
+    async def _async_init(self):
+        """Asynchronously initializes database and syncs PBX before allowing calls."""
+        await self.db_manager.connect()
+        synchronizer = PBXSynchronizer(self.config, self.db_manager)
+        await synchronizer.run_sync()
+
     def start(self):
+        # Run DB connection and PBX sync inside the event loop before starting engine
+        self.loop.run_until_complete(self._async_init())
+        
         self.engine.start()
         print("\n--- SIP Agent Online ---")
         print("Waiting for calls...")
 
-        # Start the background worker alongside the main event loop
         self.loop.create_task(self._background_task_worker())
         
         try:
@@ -69,50 +81,39 @@ class SIPAgentOrchestrator:
 
         while True:
             try:
-                # 1. Force the current time to pure UTC to match the AI's translation
-                now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+                # Provide a naive datetime object representing current UTC time
+                now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
                 
-                # 2. Print a visible heartbeat every 10 seconds (every 2nd loop since sleep is 5s)
                 if heartbeat_counter % 2 == 0:
-                    pass #print(f"[Worker Heartbeat] UTC Time: {now_utc}")
+                    pass 
                 heartbeat_counter += 1
                 
-                # Fetch ONE pending task whose time has come
-                cursor = self.db_manager.sql_conn.cursor()
-                cursor.execute('''
-                    SELECT id, task_type, payload 
-                    FROM Tasks 
-                    WHERE status = 'pending' AND scheduled_time <= ?
-                    ORDER BY scheduled_time ASC LIMIT 1
-                ''', (now_utc,))
-                
-                task = cursor.fetchone()
-                
-                if task:
-                    task_id, task_type, payload_str = task['id'], task['task_type'], task['payload']
-                    payload = json.loads(payload_str)
+                async with self.db_manager.pool.acquire() as conn:
+                    # Removed the $1::timestamp cast
+                    task = await conn.fetchrow('''
+                        SELECT id, task_type, payload 
+                        FROM Tasks 
+                        WHERE status = 'pending' AND scheduled_time <= $1
+                        ORDER BY scheduled_time ASC LIMIT 1
+                    ''', now_utc)
                     
-                    # Mark as processing to prevent double-execution
-                    cursor.execute("UPDATE Tasks SET status = 'processing' WHERE id = ?", (task_id,))
-                    self.db_manager.sql_conn.commit()
-                    
-                    print(f"\n[Worker] ⚡ FIRING SCHEDULED TASK {task_id}: {task_type} at {now_utc}")
-                    
-                    # Route the task
-                    if task_type == "outbound_call":
-                        asyncio.create_task(self._initiate_outbound_call(payload['target_extension'], payload['context']))
-                    elif task_type == "process_summary":
-                        # Hand the summary off to an LLM or vector DB
-                        pass 
+                    if task:
+                        task_id = task['id']
+                        task_type = task['task_type']
+                        payload = json.loads(task['payload'])
                         
-                    # Mark completed
-                    cursor.execute("UPDATE Tasks SET status = 'completed' WHERE id = ?", (task_id,))
-                    self.db_manager.sql_conn.commit()
+                        await conn.execute("UPDATE Tasks SET status = 'processing' WHERE id = $1", task_id)
+                        
+                        print(f"\n[Worker] ⚡ FIRING SCHEDULED TASK {task_id}: {task_type} at {now_utc}")
+                        
+                        if task_type == "outbound_call":
+                            asyncio.create_task(self._initiate_outbound_call(payload['target_extension'], payload['context']))
+                            
+                        await conn.execute("UPDATE Tasks SET status = 'completed' WHERE id = $1", task_id)
                     
             except Exception as e:
                 print(f"[Worker Error] {e}")
                 
-            # Sleep before checking again (prevents CPU thrashing)
             await asyncio.sleep(5)
 
     def _handle_ringing_call(self, call):

@@ -32,7 +32,9 @@ class ContextBuilder:
             "5. TIME ARITHMETIC: If a user gives a relative time like '35 past', look strictly at the 'Current Date/Time' in your header. "
             "Determine the current hour, and apply the minutes directly. ALWAYS confirm the absolute time (e.g. '10:35 PM') with the user before scheduling.\n"
             "6. IMPLICIT PARAMETERS: Never ask the user for technical parameters like 'context', 'briefing notes', or 'reason'. Infer these naturally from the conversation.\n"
-            "7. SYNTHESIZE DATA: When a tool returns data, DO NOT read every raw detail. Synthesize it conversationally.\n\n"
+            "7. SYNTHESIZE DATA: When a tool returns data, DO NOT read every raw detail. Synthesize it conversationally.\n"
+            "8. ONE TOOL AT A TIME: You must ONLY execute ONE tool per conversational turn. The system will crash if you attempt to call multiple tools simultaneously.\n"
+            "9. LIVE MEMORY: NEVER use `submit_call_summary` during an active conversation. If you need to remember a fact mid-call, hold onto it in your context until the user hangs up.\n\n"
         )
         
         shared_phone_instructions = ""

@@ -280,12 +280,13 @@ class ToolRegistry:
                 naive_dt = datetime.datetime.strptime(scheduled_local_str, "%Y-%m-%d %H:%M:%S")
                 local_dt = naive_dt.replace(tzinfo=local_tz)
                 
-                utc_dt = local_dt.astimezone(datetime.timezone.utc)
-                utc_str = utc_dt.strftime("%Y-%m-%d %H:%M:%S")
+                # Convert to UTC and strip the tzinfo to create a naive UTC datetime
+                utc_dt = local_dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
                 
-                print(f"[ToolRegistry] Translating Time: {scheduled_local_str} ({user_tz_str}) -> {utc_str} (UTC)")
+                print(f"[ToolRegistry] Translating Time: {scheduled_local_str} ({user_tz_str}) -> {utc_dt} (UTC)")
                 
-                await self.session.db_manager.schedule_callback(target, utc_str, context) 
+                # Pass the native object directly
+                await self.session.db_manager.schedule_callback(target, utc_dt, context) 
                 
                 return {
                     "status": "success", 

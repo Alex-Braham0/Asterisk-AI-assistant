@@ -90,26 +90,32 @@ class MediaEngine:
             self.ctrl_listener_thread.join(timeout=2.0)
 
     def _send_cmd(self, command, params=""):
-        """Sends a command using a guaranteed fresh socket."""
+        """Sends a command using a guaranteed fresh socket with retry logic."""
         payload = {"command": command.strip().replace('/', ''), "params": params.strip()}
         json_payload = json.dumps(payload)
         netstring_payload = f"{len(json_payload)}:{json_payload},"
 
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(1.0)
-                s.connect((self.ctrl_host, self.ctrl_port))
-                s.sendall(netstring_payload.encode('utf-8'))
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(1.0)
+                    s.connect((self.ctrl_host, self.ctrl_port))
+                    s.sendall(netstring_payload.encode('utf-8'))
+                    
+                    # Force wait for a response to confirm Baresip processed it
+                    response = s.recv(2048)
+                    if not response:
+                        print(f"[MediaEngine] Command '{command}' attempt {attempt+1} failed: Empty response.")
+                        time.sleep(0.2)
+                        continue
+                    return True
+            except Exception as e:
+                print(f"[MediaEngine] Command '{command}' exception on attempt {attempt+1}: {e}")
+                time.sleep(0.2)
                 
-                # Force wait for a response to confirm Baresip processed it
-                response = s.recv(2048)
-                if not response:
-                    print(f"[MediaEngine] Command '{command}' failed: Empty response (Baresip dropped connection).")
-                    return False
-                return True
-        except Exception as e:
-            print(f"[MediaEngine] Command '{command}' exception: {e}")
-            return False
+        print(f"[MediaEngine] CRITICAL: Failed to send command '{command}' after {max_retries} attempts.")
+        return False
 
     def _ctrl_listener_loop(self):
         while self._is_running:
@@ -263,7 +269,11 @@ class MediaEngine:
         return True
 
     def answer_call(self, call):
-        self._send_cmd("accept")
+        success = self._send_cmd("accept")
+        if not success:
+            print("[MediaEngine] Aborting audio bridge: Baresip failed to accept the call.")
+            return False
+
         while not self.pbx_to_ai_queue.empty():
             try:
                 self.pbx_to_ai_queue.get_nowait()
@@ -274,6 +284,7 @@ class MediaEngine:
         self.media_active = True
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self.heartbeat_thread.start()
+        return True
 
     def drop_call(self):
         # self.media_active = False
