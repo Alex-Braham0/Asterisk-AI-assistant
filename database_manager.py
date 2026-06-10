@@ -44,7 +44,7 @@ class DatabaseManager:
         CREATE TABLE IF NOT EXISTS Endpoints (
             extension VARCHAR(50) PRIMARY KEY,
             display_name VARCHAR(255),
-            device_type VARCHAR(50) DEFAULT 'STATIC_SHARED', -- STATIC_PRIVATE, STATIC_SHARED, MOBILE
+            device_type VARCHAR(50) DEFAULT 'STATIC_SHARED', 
             physical_location VARCHAR(255),
             is_active BOOLEAN DEFAULT TRUE,
             default_timezone VARCHAR(100) DEFAULT 'Europe/London'
@@ -54,7 +54,7 @@ class DatabaseManager:
             extension VARCHAR(50) REFERENCES Endpoints(extension) ON DELETE CASCADE,
             user_id INT REFERENCES Users(id) ON DELETE CASCADE,
             is_default BOOLEAN DEFAULT FALSE,
-            access_level VARCHAR(50) DEFAULT 'SHARED_ONLY', -- PRIVATE, SHARED_ONLY, BLOCKED
+            access_level VARCHAR(50) DEFAULT 'SHARED_ONLY', 
             PRIMARY KEY (extension, user_id)
         );
 
@@ -68,6 +68,23 @@ class DatabaseManager:
         """
         async with self.pool.acquire() as conn:
             await conn.execute(schema)
+            
+            # SAFE MIGRATION LOGIC: Patches existing database without dropping tables
+            try:
+                # Rename the legacy column if it exists
+                await conn.execute("ALTER TABLE Users RENAME COLUMN name TO primary_name;")
+            except asyncpg.exceptions.UndefinedColumnError:
+                pass # Already renamed or brand new table
+            except asyncpg.exceptions.DuplicateColumnError:
+                pass 
+                
+            migration = """
+            ALTER TABLE Users ADD COLUMN IF NOT EXISTS aliases TEXT[] DEFAULT '{}';
+            ALTER TABLE Endpoints ADD COLUMN IF NOT EXISTS device_type VARCHAR(50) DEFAULT 'STATIC_SHARED';
+            ALTER TABLE Endpoints ADD COLUMN IF NOT EXISTS physical_location VARCHAR(255);
+            ALTER TABLE Endpoint_Users ADD COLUMN IF NOT EXISTS access_level VARCHAR(50) DEFAULT 'SHARED_ONLY';
+            """
+            await conn.execute(migration)
 
     # --- DIRECTORY & IDENTITY LOGIC ---
 
@@ -88,7 +105,6 @@ class DatabaseManager:
             return dict(record) if record else None
 
     async def resolve_users_by_name(self, spoken_name: str):
-        """Returns all potential user ID matches based on primary name or aliases."""
         query = """
             SELECT id, primary_name 
             FROM Users 
@@ -118,15 +134,15 @@ class DatabaseManager:
     # --- SYNC UPSERTS ---
     
     async def upsert_endpoint(self, extension: str, display_name: str, device_type: str = 'STATIC_SHARED', physical_location: str = None):
+        # FIXED: ON CONFLICT no longer overwrites device_type or physical_location.
+        # This allows the FreePBX sync to update the display name without destroying local DB configurations.
         query = """
             INSERT INTO Endpoints (extension, display_name, device_type, physical_location, is_active)
             VALUES ($1, $2, $3, $4, TRUE)
             ON CONFLICT (extension) 
             DO UPDATE SET 
                 display_name = EXCLUDED.display_name,
-                device_type = EXCLUDED.device_type,
-                physical_location = EXCLUDED.physical_location,
-                is_active = TRUE;
+                is_active = TRUE; 
         """
         async with self.pool.acquire() as conn:
             await conn.execute(query, str(extension), display_name, device_type, physical_location)
@@ -146,7 +162,6 @@ class DatabaseManager:
         return "No specific memory data."
 
     async def get_endpoint(self, extension):
-        """Fetches hardware environment details and the default inhabitant's details."""
         query = """
             SELECT e.extension, e.display_name, e.device_type, e.physical_location, e.default_timezone,
                    eu.user_id as default_user_id, eu.access_level as default_access_level, u.primary_name as default_user_name
@@ -160,17 +175,15 @@ class DatabaseManager:
             return dict(record) if record else None
 
     async def get_dynamic_access_level(self, extension: str, user_id: int):
-        """Calculates the specific access level for a specific user on a specific endpoint."""
         query = "SELECT access_level FROM Endpoint_Users WHERE extension = $1 AND user_id = $2"
         async with self.pool.acquire() as conn:
             val = await conn.fetchval(query, str(extension), int(user_id))
             if val:
                 return val
                 
-            # Fallback implicit logic if no specific DB rule exists
             ep = await self.get_endpoint(extension)
             if ep and ep.get('device_type') == 'STATIC_PRIVATE':
-                return 'BLOCKED' # Protect private devices from casual guest intrusion
+                return 'BLOCKED' 
             return 'SHARED_ONLY'
 
     async def get_extension_memory(self, extension):
@@ -178,7 +191,6 @@ class DatabaseManager:
         return await asyncio.to_thread(self._read_memory_sync, filepath)
 
     async def get_user_memory(self, user_id: int, access_level: str):
-        """Physically enforces memory separation by refusing to read private files without the correct scope."""
         if access_level == 'BLOCKED':
             return "ACCESS DENIED: Physical device restrictions prevent loading user memory."
             
