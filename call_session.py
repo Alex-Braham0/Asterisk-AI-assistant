@@ -19,6 +19,8 @@ class CallSession:
         
         self.tool_registry = ToolRegistry(self)
 
+        self.tools_called = []
+
         self.target_extension = "Unknown"
         self.bridge_start_time = None
         self.bridge_start_datetime = None
@@ -144,6 +146,8 @@ class CallSession:
         
         if result is not None and self.gemini_client.is_connected:
             await self.gemini_client.send_tool_response(call_id, name, result)
+        
+        self.tools_called.append({"tool": name, "args": args, "response": result})
 
     async def _monitor_call_state(self):
         # [Keep exactly as uploaded]

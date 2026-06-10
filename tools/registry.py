@@ -1,6 +1,6 @@
 from .system import SubmitCallSummary, SetActiveUser
 from .telephony import TransferCall, SendDTMF
-from .directory import SearchDirectory
+from .directory import SearchDirectory, SearchUsers
 from .scheduling import ScheduleOutboundCall, CancelScheduledCall
 from .external import CheckWeather
 
@@ -12,7 +12,7 @@ class ToolRegistry:
         registered_classes = [
             SubmitCallSummary, SetActiveUser,
             TransferCall, SendDTMF,
-            SearchDirectory,
+            SearchDirectory, SearchUsers, # Added SearchUsers here
             ScheduleOutboundCall, CancelScheduledCall,
             CheckWeather
         ]

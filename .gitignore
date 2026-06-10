@@ -2,6 +2,8 @@
 config.json
 CLAUDE.md
 
+
+
 # Databases and Storage
 pbx_core.db
 chroma_data/

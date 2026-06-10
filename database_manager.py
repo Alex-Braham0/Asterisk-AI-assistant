@@ -35,15 +35,17 @@ class DatabaseManager:
         schema = """
         CREATE TABLE IF NOT EXISTS Users (
             id SERIAL PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
+            primary_name VARCHAR(255) NOT NULL,
+            aliases TEXT[] DEFAULT '{}',
             current_timezone VARCHAR(100) DEFAULT 'Europe/London',
-            access_level INT DEFAULT 10,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS Endpoints (
             extension VARCHAR(50) PRIMARY KEY,
             display_name VARCHAR(255),
+            device_type VARCHAR(50) DEFAULT 'STATIC_SHARED', -- STATIC_PRIVATE, STATIC_SHARED, MOBILE
+            physical_location VARCHAR(255),
             is_active BOOLEAN DEFAULT TRUE,
             default_timezone VARCHAR(100) DEFAULT 'Europe/London'
         );
@@ -52,6 +54,7 @@ class DatabaseManager:
             extension VARCHAR(50) REFERENCES Endpoints(extension) ON DELETE CASCADE,
             user_id INT REFERENCES Users(id) ON DELETE CASCADE,
             is_default BOOLEAN DEFAULT FALSE,
+            access_level VARCHAR(50) DEFAULT 'SHARED_ONLY', -- PRIVATE, SHARED_ONLY, BLOCKED
             PRIMARY KEY (extension, user_id)
         );
 
@@ -66,7 +69,7 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             await conn.execute(schema)
 
-    # --- DIRECTORY LOGIC ---
+    # --- DIRECTORY & IDENTITY LOGIC ---
 
     async def get_full_directory(self):
         async with self.pool.acquire() as conn:
@@ -84,8 +87,19 @@ class DatabaseManager:
             record = await conn.fetchrow(query, f"%{search_name}%")
             return dict(record) if record else None
 
+    async def resolve_users_by_name(self, spoken_name: str):
+        """Returns all potential user ID matches based on primary name or aliases."""
+        query = """
+            SELECT id, primary_name 
+            FROM Users 
+            WHERE primary_name ILIKE $1 
+               OR $1 ILIKE ANY(aliases)
+        """
+        async with self.pool.acquire() as conn:
+            records = await conn.fetch(query, spoken_name)
+            return [dict(r) for r in records]
+
     async def get_user_timezone(self, target_id, is_user=False):
-        """Hierarchy: Check User timezone, fallback to Endpoint timezone."""
         async with self.pool.acquire() as conn:
             if is_user:
                 val = await conn.fetchval("SELECT current_timezone FROM Users WHERE id = $1", int(target_id))
@@ -103,15 +117,19 @@ class DatabaseManager:
 
     # --- SYNC UPSERTS ---
     
-    async def upsert_endpoint(self, extension: str, display_name: str):
+    async def upsert_endpoint(self, extension: str, display_name: str, device_type: str = 'STATIC_SHARED', physical_location: str = None):
         query = """
-            INSERT INTO Endpoints (extension, display_name, is_active)
-            VALUES ($1, $2, TRUE)
+            INSERT INTO Endpoints (extension, display_name, device_type, physical_location, is_active)
+            VALUES ($1, $2, $3, $4, TRUE)
             ON CONFLICT (extension) 
-            DO UPDATE SET display_name = EXCLUDED.display_name, is_active = TRUE;
+            DO UPDATE SET 
+                display_name = EXCLUDED.display_name,
+                device_type = EXCLUDED.device_type,
+                physical_location = EXCLUDED.physical_location,
+                is_active = TRUE;
         """
         async with self.pool.acquire() as conn:
-            await conn.execute(query, str(extension), display_name)
+            await conn.execute(query, str(extension), display_name, device_type, physical_location)
             
     async def deactivate_missing_endpoints(self, active_extensions: list):
         if not active_extensions: return
@@ -119,13 +137,62 @@ class DatabaseManager:
         async with self.pool.acquire() as conn:
             await conn.execute(query, active_extensions)
 
-    # --- SEMANTIC MEMORY & TASKS ---
+    # --- SEMANTIC MEMORY & ACCESS SCOPING ---
 
     def _read_memory_sync(self, filepath):
         if os.path.exists(filepath):
             with open(filepath, "r", encoding="utf-8") as f:
                 return f.read()[:2000]
-        return "No specific memory file exists for this user yet."
+        return "No specific memory data."
+
+    async def get_endpoint(self, extension):
+        """Fetches hardware environment details and the default inhabitant's details."""
+        query = """
+            SELECT e.extension, e.display_name, e.device_type, e.physical_location, e.default_timezone,
+                   eu.user_id as default_user_id, eu.access_level as default_access_level, u.primary_name as default_user_name
+            FROM Endpoints e
+            LEFT JOIN Endpoint_Users eu ON e.extension = eu.extension AND eu.is_default = TRUE
+            LEFT JOIN Users u ON eu.user_id = u.id
+            WHERE e.extension = $1
+        """
+        async with self.pool.acquire() as conn:
+            record = await conn.fetchrow(query, str(extension))
+            return dict(record) if record else None
+
+    async def get_dynamic_access_level(self, extension: str, user_id: int):
+        """Calculates the specific access level for a specific user on a specific endpoint."""
+        query = "SELECT access_level FROM Endpoint_Users WHERE extension = $1 AND user_id = $2"
+        async with self.pool.acquire() as conn:
+            val = await conn.fetchval(query, str(extension), int(user_id))
+            if val:
+                return val
+                
+            # Fallback implicit logic if no specific DB rule exists
+            ep = await self.get_endpoint(extension)
+            if ep and ep.get('device_type') == 'STATIC_PRIVATE':
+                return 'BLOCKED' # Protect private devices from casual guest intrusion
+            return 'SHARED_ONLY'
+
+    async def get_extension_memory(self, extension):
+        filepath = os.path.join(self.memory_endpoints_dir, f"{extension}.md")
+        return await asyncio.to_thread(self._read_memory_sync, filepath)
+
+    async def get_user_memory(self, user_id: int, access_level: str):
+        """Physically enforces memory separation by refusing to read private files without the correct scope."""
+        if access_level == 'BLOCKED':
+            return "ACCESS DENIED: Physical device restrictions prevent loading user memory."
+            
+        pub_path = os.path.join(self.memory_users_dir, f"{user_id}_public.md")
+        pub_mem = await asyncio.to_thread(self._read_memory_sync, pub_path)
+        
+        if access_level == 'PRIVATE':
+            priv_path = os.path.join(self.memory_users_dir, f"{user_id}_private.md")
+            priv_mem = await asyncio.to_thread(self._read_memory_sync, priv_path)
+            return f"--- PUBLIC MEMORY ---\n{pub_mem}\n\n--- PRIVATE MEMORY ---\n{priv_mem}"
+            
+        return f"--- PUBLIC MEMORY ---\n{pub_mem}\n\n[PRIVATE MEMORY REDACTED - UNVERIFIED DEVICE LOCATION]"
+
+    # --- TASK SCHEDULING ---
 
     async def spool_call_summary(self, extension, summary_data):
         filename = f"{extension}_{int(time.time())}.json"
@@ -137,9 +204,7 @@ class DatabaseManager:
             json.dump(data, f, indent=4)
 
     async def schedule_callback(self, target_extension, scheduled_time, payload_dict):
-        # Inject the target into the payload before stringifying
         if isinstance(payload_dict, str):
-            # Fallback for legacy calls
             payload = json.dumps({"target_extension": target_extension, "context": payload_dict})
         else:
             payload_dict["target_extension"] = target_extension
@@ -163,7 +228,6 @@ class DatabaseManager:
             results = []
             for row in records:
                 payload_data = json.loads(row['payload'])
-                # 'context' could be in 'context' or 'execution_context' depending on the tool version used
                 context_str = payload_data.get('context', payload_data.get('execution_context', 'No context provided'))
                 results.append({
                     "task_id": row['id'],
@@ -176,26 +240,4 @@ class DatabaseManager:
         query = "UPDATE Tasks SET status = 'cancelled' WHERE id = $1 AND status = 'pending'"
         async with self.pool.acquire() as conn:
             result = await conn.execute(query, int(task_id))
-            # asyncpg execute returns string like "UPDATE 1"
             return int(result.split()[-1])
-        
-    async def get_endpoint(self, extension):
-        query = """
-            SELECT e.extension, e.display_name, e.default_timezone,
-                   eu.user_id, u.name as default_user_name, u.access_level
-            FROM Endpoints e
-            LEFT JOIN Endpoint_Users eu ON e.extension = eu.extension AND eu.is_default = TRUE
-            LEFT JOIN Users u ON eu.user_id = u.id
-            WHERE e.extension = $1
-        """
-        async with self.pool.acquire() as conn:
-            record = await conn.fetchrow(query, str(extension))
-            return dict(record) if record else None
-
-    async def get_extension_memory(self, extension):
-        filepath = os.path.join(self.memory_endpoints_dir, f"{extension}.md")
-        return await asyncio.to_thread(self._read_memory_sync, filepath)
-
-    async def get_user_memory(self, user_name):
-        filepath = os.path.join(self.memory_users_dir, f"{user_name}.md")
-        return await asyncio.to_thread(self._read_memory_sync, filepath)
