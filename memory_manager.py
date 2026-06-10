@@ -65,20 +65,35 @@ CURRENT ENDPOINT PROFILE:
 CALL TRANSCRIPT:
 {transcript}
 """
-        response = self.client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=MemoryUpdate,
-                temperature=0.1
-            ),
-        )
-        return json.loads(response.text)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self.client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=MemoryUpdate,
+                        temperature=0.1
+                    ),
+                )
+                return json.loads(response.text)
+            
+            except Exception as e:
+                err_str = str(e).upper()
+                # Check for transient API errors (High Demand, Quota, Server Overload)
+                if any(err in err_str for err in ["503", "UNAVAILABLE", "429", "QUOTA"]):
+                    if attempt < max_retries - 1:
+                        sleep_time = (2 ** attempt) * 5  # Exponential backoff: 5s, 10s
+                        print(f"[Memory Manager] API overloaded (503/429). Retrying in {sleep_time}s... (Attempt {attempt+1}/{max_retries})")
+                        time.sleep(sleep_time)
+                        continue
+                
+                # If it's a different error or we are out of retries, push the error up the stack
+                raise
 
     def process_summary_dict(self, summary_data: dict) -> tuple[str, str]:
         endpoint_id = summary_data.get("extension")
-        # Critical change: Defaulting to ID representation. If unknown, leave it as generic unverified string.
         user_id = summary_data.get("user_id") 
         
         if not endpoint_id:
@@ -101,13 +116,11 @@ CALL TRANSCRIPT:
         
         updated_entities = []
         
-        # Endpoint Memory
         endpoint_profile = new_profiles.get("endpoint_profile", "").strip()
         if endpoint_profile and endpoint_profile != "No existing memory profile.":
             self.write_memory(self.memory_endpoints_dir, endpoint_id, endpoint_profile)
             updated_entities.append(f"Endpoint({endpoint_id})")
 
-        # User Memory (Only if verified user_id was passed by the active session)
         if user_id:
             pub_profile = new_profiles.get("user_profile_public", "").strip()
             priv_profile = new_profiles.get("user_profile_private", "").strip()
@@ -143,17 +156,25 @@ CALL TRANSCRIPT:
         except ValueError as e:
             print(f"[Memory Manager] VALUE ERROR processing {file_path.name}: {e}")
             os.rename(file_path, self.pending_dir / f"{file_path.name}.error")
+            
         except Exception as e:
-            print(f"[Memory Manager] CRITICAL ERROR processing {file_path.name}: {e}")
-            os.rename(file_path, self.pending_dir / f"{file_path.name}.error")
+            err_str = str(e).upper()
+            # If the error is an unavoidable API timeout, leave it as a standard .json file
+            # so the daemon automatically attempts to process it again on the next pass.
+            if any(err in err_str for err in ["503", "UNAVAILABLE", "429", "QUOTA"]):
+                print(f"[Memory Manager] TRANSIENT API ERROR processing {file_path.name}. Leaving in pending queue.")
+            else:
+                # If it's a code-breaking error (like corrupted formatting), quarantine it.
+                print(f"[Memory Manager] CRITICAL ERROR processing {file_path.name}: {e}")
+                os.rename(file_path, self.pending_dir / f"{file_path.name}.error")
 
     def start_daemon(self, poll_interval: int = 5):
         print("[Memory Manager] Daemon initialized. Booting directory scanner...")
         while True:
+            # Grab all pending json files
             for file_path in self.pending_dir.glob("*.json"):
                 self.process_memory_file(file_path)
             time.sleep(poll_interval)
-
 
 if __name__ == "__main__":
     try:
