@@ -4,9 +4,9 @@ import json
 import base64
 import queue
 import datetime
-import numpy as np
+from ai.audio_processor import AudioProcessor
 
-class GeminiClient:
+class GeminiSocket:
     def __init__(self, api_key, pbx_to_ai_queue, pbx_inject_callback, pbx_flush_callback, tool_handler_callback, system_instruction, tools):
         self.uri = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={api_key}"
         self.pbx_to_ai_queue = pbx_to_ai_queue
@@ -38,7 +38,7 @@ class GeminiClient:
                     "speechConfig": {
                         "voiceConfig": {
                             "prebuiltVoiceConfig": {
-                                "voiceName": "Puck"  # Options: Puck, Charon, Aoede, Fenrir, Kore
+                                "voiceName": "Puck"
                             }
                         }
                     }
@@ -75,7 +75,6 @@ class GeminiClient:
             self.is_connected = False
             if self.ws:
                 await self.ws.close()
-            # TRIGGER CIRCUIT BREAKER
             if not self.summary_requested:
                 self._log("[Gemini] Connection lost abruptly. Triggering SIP hangup.")
                 on_disconnect_callback()
@@ -150,19 +149,10 @@ class GeminiClient:
                                     pcm_api = base64.b64decode(b64_audio)
                                     buffer_24k.extend(pcm_api)
                                     
-                    # Wait for 50ms of audio (2400 bytes) instead of 200ms
-                    while len(buffer_24k) >= 6:
-                        # Find the largest multiple of 6
-                        chunk_size = len(buffer_24k) - (len(buffer_24k) % 6)
-                        chunk_24k = bytes(buffer_24k[:chunk_size])
-                        del buffer_24k[:chunk_size]
-                        
-                        audio_24k = np.frombuffer(chunk_24k, dtype=np.int16)
-                        audio_24k = np.clip(audio_24k * 0.8, -32768, 32767).astype(np.int16)
-                        
-                        # Downsample 24kHz to 8kHz
-                        audio_8k = audio_24k.reshape(-1, 3).mean(axis=1).astype(np.int16)
-                        self.pbx_inject_callback(audio_8k.tobytes())
+                    # Delegate downsampling to the AudioProcessor
+                    audio_8k, buffer_24k = AudioProcessor.process_downlink_audio(buffer_24k)
+                    if audio_8k:
+                        self.pbx_inject_callback(audio_8k)
                         
                 # 2. Handle TOOL CALLS
                 if "toolCall" in data:
@@ -174,7 +164,6 @@ class GeminiClient:
                         func_name = call.get("name")
                         func_args = call.get("args", {})
                         
-                        # Blindly hand execution off to the CallSession/ToolRegistry
                         asyncio.create_task(self.tool_handler_callback(call_id, func_name, func_args))
                         
             except websockets.exceptions.ConnectionClosed:
@@ -198,13 +187,13 @@ class GeminiClient:
         try:
             await self.ws.send(json.dumps(response_msg))
             self._log(f"[Gemini] Sent toolResponse for {name}.")
-            self.tool_call_pending = False  # <--- RESET THE BREAKER
+            self.tool_call_pending = False
         except Exception as e:
             self._log(f"[Gemini] Failed to send toolResponse: {e}")
-            self.tool_call_pending = False  # Ensure it resets on error to prevent freezing
+            self.tool_call_pending = False 
 
     async def request_summary_and_close(self, reason):
-        """Injects the command to execute the summary tool."""
+        """Injects the command to execute the summary tool (STRICT NON-VERBAL ENFORCEMENT)."""
         if self.summary_requested:
             return
         
@@ -217,8 +206,8 @@ class GeminiClient:
         command_text = (
             f"SYSTEM COMMAND: {reason} "
             "You are required to execute the 'submit_call_summary' tool immediately. "
-            "CRITICAL: Do not speak. Do not narrate your actions. Do not output any text or thoughts. "
-            "Execute the function immediately."
+            "CRITICAL DIRECTIVE: DO NOT output any text, thoughts, or speech. "
+            "You MUST output ONLY the JSON payload for the `submit_call_summary` tool immediately."
         )
         
         msg = {

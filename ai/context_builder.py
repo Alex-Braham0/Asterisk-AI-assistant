@@ -3,7 +3,10 @@ import zoneinfo
 
 class ContextBuilder:
     @staticmethod
-    def build_initial_prompt(base_system_prompt, direction="inbound", caller_info=None, user_timezone="Europe/London", memory_content="", is_shared_phone=False):
+    def build_initial_prompt(base_system_prompt, direction="inbound", caller_info=None, endpoint_data=None, memory_content=""):
+        # Safely determine timezone
+        user_timezone = endpoint_data.get('default_timezone', 'Europe/London') if endpoint_data else 'Europe/London'
+        
         tz = zoneinfo.ZoneInfo(user_timezone)
         now = datetime.datetime.now(tz).strftime('%A, %B %d, %Y %I:%M %p %Z')
         
@@ -37,13 +40,24 @@ class ContextBuilder:
             "9. LIVE MEMORY: NEVER use `submit_call_summary` during an active conversation. If you need to remember a fact mid-call, hold onto it in your context until the user hangs up.\n\n"
         )
         
+        # The "New Caller / Blank Slate" Fix
+        unknown_caller_instructions = ""
+        if not endpoint_data or not endpoint_data.get('physical_location'):
+            unknown_caller_instructions = (
+                "SYSTEM ALERT: This is an unregistered caller or device.\n"
+                "You MUST do the following organically during the conversation:\n"
+                "1. Ask for their name and use the `register_new_user` tool to create their profile.\n"
+                "2. Ask what kind of device this is (e.g., mobile, house phone) and where it is located, then use the `update_endpoint_context` tool.\n\n"
+            )
+
         shared_phone_instructions = ""
-        if is_shared_phone:
+        # If it's a known endpoint but has no default user bound, treat as shared.
+        if endpoint_data and not endpoint_data.get('default_user_name'):
             shared_phone_instructions = (
                 "SHARED PHONE DIRECTIVE:\n"
                 "You are speaking on a shared phone. You do not know who is calling. "
                 "You MUST politely ask 'Who am I speaking with?' before fulfilling any requests. "
-                "Once they answer, immediately use the `set_active_user` tool.\n\n"
+                "Once they answer, immediately use the `search_users` and `set_active_user` tools.\n\n"
             )
 
         amd_instructions = ""
@@ -55,4 +69,4 @@ class ContextBuilder:
                 "2. ANSWERING MACHINE: If you hear a robotic voicemail greeting or a 'BEEP', wait for the beep, leave a brief message stating why you called, and immediately use the `end_call` tool.\n\n"
             )
             
-        return header + memory_section + behavioral_constraints + shared_phone_instructions + amd_instructions + base_system_prompt
+        return header + memory_section + behavioral_constraints + unknown_caller_instructions + shared_phone_instructions + amd_instructions + base_system_prompt

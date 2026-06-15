@@ -1,9 +1,9 @@
 import aiohttp
-from .base import BaseTool
+from tools.base import BaseTool
 
 class CheckWeather(BaseTool):
     name = "check_weather"
-    description = "Fetches the weather forecast. You MUST format the location correctly."
+    description = "Fetches the current weather forecast. You MUST format the location correctly."
     auth_level = 0
 
     parameters = {
@@ -11,7 +11,7 @@ class CheckWeather(BaseTool):
         "properties": {
             "location": {
                 "type": "STRING", 
-                "description": "The exact official city name ONLY. Do not include suffixes, neighborhoods, or conversational filler."
+                "description": "The exact official city name ONLY. Do not include suffixes or neighborhoods."
             },
             "time_context": {
                 "type": "STRING", 
@@ -23,10 +23,10 @@ class CheckWeather(BaseTool):
 
     async def execute(self, session, args):
         clean_location = args.get("location", "Cardiff").strip().lower()
+        api_key = session.config.openweathermap_api_key
         
-        api_key = session.config.get("openweathermap_api_key")
         if not api_key:
-            return {"status": "failed", "message": "Weather API key missing."}
+            return {"status": "failed", "message": "Weather API key missing from configuration."}
 
         url = f"http://api.openweathermap.org/data/2.5/weather?q={clean_location}&appid={api_key}&units=metric"
         
@@ -46,6 +46,6 @@ class CheckWeather(BaseTool):
                             "forecast": forecast
                         }
                     else:
-                        return {"status": "failed", "message": f"API returned status {response.status} for location '{clean_location}'"}
+                        return {"status": "failed", "message": f"API returned status {response.status} for '{clean_location}'"}
         except Exception as e:
             return {"status": "failed", "message": str(e)}

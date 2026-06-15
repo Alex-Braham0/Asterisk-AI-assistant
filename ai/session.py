@@ -1,38 +1,38 @@
 import asyncio
-from gemini_client import GeminiClient
-from tools import ToolRegistry
-from context_builder import ContextBuilder
 import time
 import datetime
+from ai.gemini_socket import GeminiSocket
+from ai.context_builder import ContextBuilder
+from tools.registry import ToolRegistry
 
 class CallSession:
-    def __init__(self, call, engine, config, db_manager):
+    def __init__(self, call, engine, config, db):
         self.call = call
         self.engine = engine
         self.config = config
-        self.db_manager = db_manager
+        self.db = db
         
-        self.gemini_client = None
+        self.gemini_socket = None
         self.ai_task = None
         self.call_dropped_event = asyncio.Event()
         self.direction = "inbound"
         
         self.tool_registry = ToolRegistry(self)
-
         self.tools_called = []
 
         self.target_extension = "Unknown"
         self.bridge_start_time = None
         self.bridge_start_datetime = None
+        self.active_user_id = None
+        self.active_user_level = 0
 
     async def setup_connection(self, direction="inbound", target_info=None):
         """Pre-warms the Gemini WebSocket connection before audio starts."""
         self.direction = direction
 
-        # Determine caller/target info safely
         if direction == "inbound":
             from_header = self.call.request.headers.get('From', {})
-            caller_name = from_header.get('caller', 'Unknown').replace('"', '') # Strip weird quotes
+            caller_name = from_header.get('caller', 'Unknown').replace('"', '')
             caller_number = from_header.get('number', 'Unknown')
             caller = f"Name: {caller_name} | Extension: {caller_number}"
         else:
@@ -45,43 +45,35 @@ class CallSession:
 
         self.target_extension = caller_number
 
-        endpoint_data = await self.db_manager.get_endpoint(caller_number)
+        # Uses the new DB repository structure
+        endpoint_data = await self.db.endpoints.get_endpoint(caller_number)
         
-        is_shared = False
         memory_content = "No specific memory file exists yet."
-        caller_tz = "Europe/London"
 
         if endpoint_data:
             default_user_name = endpoint_data.get('default_user_name')
-            caller_tz = endpoint_data.get('default_timezone', 'Europe/London')
-            
             if default_user_name:
-                # Personal phone: Load user memory
                 self.active_user_level = endpoint_data.get('access_level', 10)
-                memory_content = await self.db_manager.get_user_memory(default_user_name)
+                memory_content = await self.db.users.get_user_memory(default_user_name, self.active_user_level)
             else:
-                # Shared phone: Load endpoint hardware memory & flag for identity check
-                is_shared = True
-                self.active_user_level = 0 # Guest until verified
-                memory_content = await self.db_manager.get_extension_memory(caller_number)
-
+                self.active_user_level = 0 
+                memory_content = await self.db.endpoints.get_extension_memory(caller_number)
         else:
-            # Fallback if unknown endpoint
-            memory_content = await self.db_manager.get_extension_memory(caller_number)
+            memory_content = await self.db.endpoints.get_extension_memory(caller_number)
 
         dynamic_prompt = ContextBuilder.build_initial_prompt(
-            self.config["system_prompt"], 
+            base_system_prompt=self.config.system_prompt, 
             direction=direction, 
             caller_info=caller,
-            user_timezone=caller_tz,
+            endpoint_data=endpoint_data,
             memory_content=memory_content
         )
 
-        self.gemini_client = GeminiClient(
-            api_key=self.config["gemini_api_key"],
+        self.gemini_socket = GeminiSocket(
+            api_key=self.config.gemini_api_key,
             pbx_to_ai_queue=self.engine.pbx_to_ai_queue,
             pbx_inject_callback=self.engine.inject_audio,
-            pbx_flush_callback=self.engine.flush_tx_buffer,
+            pbx_flush_callback=self.engine.audio.flush_tx_buffer,
             tool_handler_callback=self._handle_tool_call,
             system_instruction=dynamic_prompt,
             tools=self.tool_registry.get_declarations()
@@ -89,7 +81,7 @@ class CallSession:
 
         try:
             print(f"[CallSession] Pre-warming Gemini WebSocket ({direction})...")
-            return await asyncio.wait_for(self.gemini_client.connect(), timeout=10.0)
+            return await asyncio.wait_for(self.gemini_socket.connect(), timeout=10.0)
         except Exception as e:
             print(f"[CallSession] Connection failed: {e}")
             return False
@@ -107,36 +99,33 @@ class CallSession:
             await asyncio.sleep(2)
             self.engine.answer_call(self.call)
         else:
-            self.engine.engage_outbound_media()
+            self.engine.audio.start()
 
-            if self.gemini_client.is_connected:
-                await self.gemini_client.send_system_event(
+            if self.gemini_socket.is_connected:
+                await self.gemini_socket.send_system_event(
                     "The human has picked up the phone. Stop waiting. Say 'Hello?' immediately."
                 )
             
-        self.ai_task = asyncio.create_task(self.gemini_client.run_audio_bridge(
+        self.ai_task = asyncio.create_task(self.gemini_socket.run_audio_bridge(
             on_disconnect_callback=self.drop_call
         ))
+        
         monitor_task = asyncio.create_task(self._monitor_call_state())
         
         await self.call_dropped_event.wait()
         
         print("[CallSession] Call hung up by remote party.")
-        if self.gemini_client.is_connected:
+        if self.gemini_socket.is_connected:
             await self.trigger_summary(reason="The user has hung up the phone.")
             
-            # CRITICAL FIX: Do not instantly terminate. 
-            # Wait for the AI to finish speaking/tool calling.
-            # We wait until the summary tool actually executes and closes the connection itself.
             timeout = 10.0
             start_time = asyncio.get_event_loop().time()
-            while self.gemini_client.is_connected and (asyncio.get_event_loop().time() - start_time) < timeout:
+            while self.gemini_socket.is_connected and (asyncio.get_event_loop().time() - start_time) < timeout:
                 await asyncio.sleep(0.1)
 
         self.terminate_bridge()
 
     async def _handle_tool_call(self, call_id, name, args):
-        # [Keep this exactly as you had it in your uploaded file]
         print(f"[CallSession] Tool Execution Requested: {name}({args})")
         try:
             result = await self.tool_registry.execute_tool(name, args)
@@ -144,45 +133,48 @@ class CallSession:
             print(f"[CallSession] Tool Execution Exception: {e}")
             result = {"error": "Internal System Error", "details": str(e), "status": "failed"}
         
-        if result is not None and self.gemini_client.is_connected:
-            await self.gemini_client.send_tool_response(call_id, name, result)
+        if result is not None and self.gemini_socket.is_connected:
+            await self.gemini_socket.send_tool_response(call_id, name, result)
         
         self.tools_called.append({"tool": name, "args": args, "response": result})
 
     async def _monitor_call_state(self):
-        # [Keep exactly as uploaded]
         try:
-            while self.call.state.name == "ANSWERED":
+            # Matches against the dict structure in the refactored engine
+            call_id = getattr(self.call, '_id', None)
+            while call_id and call_id in self.engine.active_calls:
                 await asyncio.sleep(0.1)
         finally:
             self.call_dropped_event.set()
 
     def drop_call(self):
-        self.engine.drop_call()
+        call_id = getattr(self.call, '_id', None)
+        if call_id:
+            self.engine.drop_call(call_id)
 
     async def drain_audio_and_drop_call(self):
         """Drains audio based on API turn status rather than arbitrary silence."""
         print("[CallSession] Engaging dynamic audio drain...")
         
-        # 1. Wait for Gemini to finish generating all audio chunks over the WebSocket
-        if self.gemini_client and self.gemini_client.is_connected:
-            while self.gemini_client.ai_speaking_event.is_set():
+        if self.gemini_socket and self.gemini_socket.is_connected:
+            while self.gemini_socket.ai_speaking_event.is_set():
                 await asyncio.sleep(0.05)
                 
-        # 2. Wait for the local PulseAudio transmission buffer to physically empty
-        while len(self.engine.tx_buffer) > 0:
+        while len(self.engine.audio.tx_buffer) > 0:
             await asyncio.sleep(0.05)
         
         print("[CallSession] Turn complete and playback stream empty. Hanging up.")
         self.drop_call()
 
     async def trigger_summary(self, reason):
-        if self.gemini_client and self.gemini_client.is_connected:
-            await self.gemini_client.request_summary_and_close(reason)
+        if self.gemini_socket and self.gemini_socket.is_connected:
+            await self.gemini_socket.request_summary_and_close(reason)
 
     def terminate_bridge(self):
-        if self.gemini_client: self.gemini_client.is_connected = False
-        if self.ai_task: self.ai_task.cancel()
+        if self.gemini_socket: 
+            self.gemini_socket.is_connected = False
+        if self.ai_task: 
+            self.ai_task.cancel()
 
     def cleanup(self):
         print("[CallSession] Cleaning up session resources...")
