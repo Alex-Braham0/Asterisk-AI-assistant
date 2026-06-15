@@ -57,3 +57,23 @@ class SendDTMF(BaseTool):
             return {"status": "success", "message": f"Successfully pressed {digit}."}
         except Exception as e:
             return {"status": "failed", "message": f"Failed to send DTMF: {e}"}
+
+class EndCall(BaseTool):
+    name = "end_call"
+    description = "Hangs up the phone. Use this ONLY when the user explicitly asks you to hang up, say goodbye, or terminate the call."
+    auth_level = 0
+
+    parameters = {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Why you are hanging up."
+            }
+        }
+    }
+
+    async def execute(self, session, args):
+        print(f"[ToolRegistry] AI initiated hangup. Reason: {args.get('reason', 'None provided')}")
+        session.drop_call()
+        return {"status": "success", "message": "Call physically dropped. System will now prompt for summary."}

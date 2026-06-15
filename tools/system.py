@@ -40,6 +40,14 @@ class SubmitCallSummary(BaseTool):
     }
 
     async def execute(self, session, args):
+        # SECURITY LOCK: Reject manual execution
+        if not getattr(session.gemini_socket, 'summary_requested', False):
+            print("[ToolRegistry] Blocked premature summary attempt.")
+            return {
+                "status": "failed", 
+                "message": "CRITICAL ERROR: The call is still active! Do NOT use submit_call_summary. If the user asked you to hang up, you MUST use the `end_call` tool instead."
+            }
+
         extension = getattr(session, 'target_extension', 'Unknown')
         args["user_id"] = getattr(session, 'active_user_id', None)
         
