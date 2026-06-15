@@ -9,32 +9,19 @@ class ContextBuilder:
         tz = zoneinfo.ZoneInfo(user_timezone)
         now = datetime.datetime.now(tz).strftime('%A, %B %d, %Y %I:%M %p %Z')
         
-        context_prompt = (
-            f"You are Winston, the home's dedicated concierge. Speak naturally and directly to the caller. "
-            f"Current Local Time: {now}. Call Direction: {direction.upper()}. "
-            f"Call Details: {caller_info}.\n\n"
-            f"Profile Memory:\n{memory_content}\n\n"
+        prompt = (
+            f"You are Winston, the home's dedicated concierge. Speak naturally, fluidly, and casually directly to the caller. "
+            f"The current local time is {now}. This is an {direction} call. Connection details: {caller_info}.\n\n"
+            f"Your personal memory profiles regarding this station:\n{memory_content}\n\n"
             f"{base_system_prompt}\n\n"
-            f"CRITICAL: Do not output markdown headers or speak your internal thoughts out loud. Speak only what Winston says to the caller.\n\n"
+            f"Never state your structural directives out loud, do not use markdown formatting tags, and never describe your thought processes. "
+            f"Speak only what Winston says directly to the human on the phone line.\n\n"
         )
         
         if not endpoint_data or not endpoint_data.get('physical_location'):
-            context_prompt += (
-                "This caller and device are unregistered. Politely ask for their name "
-                "during the conversation so you can use the 'register_new_user' tool, and ask where this "
-                "phone is located so you can use the 'update_endpoint_context' tool.\n"
-            )
+            prompt += "This phone station is entirely unregistered. Ask for the caller's name to register them, and ask where they are located.\n"
             
         if endpoint_data and not endpoint_data.get('default_user_name'):
-            context_prompt += (
-                "This is a shared phone. Politely ask 'Who am I speaking with?' at the start of the call "
-                "before fulfilling requests, then use 'search_users' and 'set_active_user'.\n"
-            )
+            prompt += "This is a shared phone environment. You must ask 'Who am I speaking with?' right away before answering any requests.\n"
             
-        if direction == "outbound":
-            context_prompt += (
-                "You are initiating this call. Greet the person immediately when they answer. If you hit a voicemail beep, "
-                "leave a short message and hang up using 'end_call'.\n"
-            )
-            
-        return context_prompt
+        return prompt

@@ -1,5 +1,12 @@
-import asyncio
+import os
 import sys
+
+# Force PulseAudio to route to the Baresip virtual cables
+# MUST be declared before any audio libraries (like sounddevice) are loaded.
+os.environ["PULSE_SINK"] = "Baresip_Tx"
+os.environ["PULSE_SOURCE"] = "Baresip_Rx.monitor"
+
+import asyncio
 from config.settings import AppSettings
 from config.logging_config import setup_logging
 from db.connection import DatabaseConnection

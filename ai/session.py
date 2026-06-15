@@ -45,7 +45,6 @@ class CallSession:
 
         self.target_extension = caller_number
 
-        # Uses the new DB repository structure
         endpoint_data = await self.db.endpoints.get_endpoint(caller_number)
         
         memory_content = "No specific memory file exists yet."
@@ -73,7 +72,7 @@ class CallSession:
             api_key=self.config.gemini_api_key,
             pbx_to_ai_queue=self.engine.pbx_to_ai_queue,
             pbx_inject_callback=self.engine.inject_audio,
-            pbx_flush_callback=self.engine.audio.flush_tx_buffer,
+            pbx_flush_callback=self.engine.flush_tx_buffer,
             tool_handler_callback=self._handle_tool_call,
             system_instruction=dynamic_prompt,
             tools=self.tool_registry.get_declarations()
@@ -99,8 +98,6 @@ class CallSession:
             await asyncio.sleep(2)
             self.engine.answer_call(self.call)
         else:
-            self.engine.audio.start()
-
             if self.gemini_socket.is_connected:
                 await self.gemini_socket.send_system_event(
                     "The human has picked up the phone. Stop waiting. Say 'Hello?' immediately."
@@ -140,9 +137,9 @@ class CallSession:
 
     async def _monitor_call_state(self):
         try:
-            # Matches against the dict structure in the refactored engine
             call_id = getattr(self.call, '_id', None)
-            while call_id and call_id in self.engine.active_calls:
+            # FIX: Corrected to check the single active_call_id tracking variable
+            while call_id and call_id == self.engine.active_call_id:
                 await asyncio.sleep(0.1)
         finally:
             self.call_dropped_event.set()
@@ -160,7 +157,7 @@ class CallSession:
             while self.gemini_socket.ai_speaking_event.is_set():
                 await asyncio.sleep(0.05)
                 
-        while len(self.engine.audio.tx_buffer) > 0:
+        while len(self.engine.tx_buffer) > 0:
             await asyncio.sleep(0.05)
         
         print("[CallSession] Turn complete and playback stream empty. Hanging up.")

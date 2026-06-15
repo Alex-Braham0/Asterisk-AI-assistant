@@ -2,9 +2,8 @@ import asyncio
 import websockets
 import json
 import base64
-import queue as standard_queue
 import datetime
-from ai.audio_processor import AudioProcessor
+import numpy as np
 
 class GeminiSocket:
     def __init__(self, api_key, pbx_to_ai_queue, pbx_inject_callback, pbx_flush_callback, tool_handler_callback, system_instruction, tools):
@@ -26,7 +25,6 @@ class GeminiSocket:
         print(f"[{timestamp}] {msg}")
 
     async def connect(self):
-        """Configures the Live API for bidirectional audio."""
         self._log("[Gemini] Initiating WS Connection...")
         self.ws = await websockets.connect(self.uri)
         
@@ -63,7 +61,6 @@ class GeminiSocket:
         return False
 
     async def run_audio_bridge(self, on_disconnect_callback):
-        """Runs the concurrent Uplink (Mic) and Downlink (Speaker) tasks."""
         uplink_task = asyncio.create_task(self._uplink_loop())
         downlink_task = asyncio.create_task(self._downlink_loop())
         
@@ -80,7 +77,6 @@ class GeminiSocket:
                 on_disconnect_callback()
 
     async def _uplink_loop(self):
-        """Batches 8kHz PCM frames thread-safely from the standard hardware queue to the WebSocket."""
         audio_buffer = bytearray()
         
         while self.is_connected:
@@ -89,8 +85,7 @@ class GeminiSocket:
                 continue
 
             try:
-                # Direct thread-safe synchronous pull eliminates event loop micro-jitter
-                pcm_8k = self.pbx_to_ai_queue.get_nowait() 
+                pcm_8k = await self.pbx_to_ai_queue.get() 
                 audio_buffer.extend(pcm_8k)
                 
                 if len(audio_buffer) >= 1600:
@@ -108,23 +103,17 @@ class GeminiSocket:
                     }
                     await self.ws.send(json.dumps(msg))
                     
-            except standard_queue.Empty:
-                await asyncio.sleep(0.005)  # Fast poll match to block size
             except Exception as e:
                 self._log(f"[Gemini Uplink Error] {e}")
                 break
 
     async def _downlink_loop(self):
-        """Receives 24kHz audio and tool calls from Gemini."""
         buffer_24k = bytearray()
         
         while self.is_connected:
             try:
                 response = await self.ws.recv()
                 data = json.loads(response)
-                
-                if "serverContent" not in data or "modelTurn" not in data.get("serverContent", {}):
-                    pass
                 
                 if "serverContent" in data:
                     content = data["serverContent"]
@@ -133,8 +122,8 @@ class GeminiSocket:
                         self.ai_speaking_event.clear()
                     
                     if content.get("interrupted"):
-                        self._log("[Gemini] User Interrupted. Flushing audio buffer.")
-                        self.pbx_flush_callback()
+                        self._log("[Gemini] User Interrupted Event Triggered. (Ignoring Buffer Flush for Diagnostic Routing)")
+                        # self.pbx_flush_callback() <-- DISABLED to prevent self-wiping audio
                         
                     if "modelTurn" in content:
                         parts = content["modelTurn"].get("parts", [])
@@ -149,9 +138,16 @@ class GeminiSocket:
                                     pcm_api = base64.b64decode(b64_audio)
                                     buffer_24k.extend(pcm_api)
                                     
-                    audio_8k, buffer_24k = AudioProcessor.process_downlink_audio(buffer_24k)
-                    if audio_8k:
-                        self.pbx_inject_callback(audio_8k)
+                    while len(buffer_24k) >= 6:
+                        chunk_size = len(buffer_24k) - (len(buffer_24k) % 6)
+                        chunk_24k = bytes(buffer_24k[:chunk_size])
+                        del buffer_24k[:chunk_size]
+                        
+                        audio_24k = np.frombuffer(chunk_24k, dtype=np.int16)
+                        audio_24k = np.clip(audio_24k * 0.8, -32768, 32767).astype(np.int16)
+                        
+                        audio_8k = audio_24k.reshape(-1, 3).mean(axis=1).astype(np.int16)
+                        self.pbx_inject_callback(audio_8k.tobytes())
                         
                 if "toolCall" in data:
                     self.tool_call_pending = True
