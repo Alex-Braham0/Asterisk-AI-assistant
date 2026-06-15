@@ -2,7 +2,7 @@ import asyncio
 import websockets
 import json
 import base64
-import queue
+import queue as standard_queue
 import datetime
 from ai.audio_processor import AudioProcessor
 
@@ -80,7 +80,7 @@ class GeminiSocket:
                 on_disconnect_callback()
 
     async def _uplink_loop(self):
-        """Batches 8kHz PCM frames from the PBX and sends them to the Gemini API."""
+        """Batches 8kHz PCM frames thread-safely from the standard hardware queue to the WebSocket."""
         audio_buffer = bytearray()
         
         while self.is_connected:
@@ -89,7 +89,8 @@ class GeminiSocket:
                 continue
 
             try:
-                pcm_8k = await self.pbx_to_ai_queue.get() 
+                # Direct thread-safe synchronous pull eliminates event loop micro-jitter
+                pcm_8k = self.pbx_to_ai_queue.get_nowait() 
                 audio_buffer.extend(pcm_8k)
                 
                 if len(audio_buffer) >= 1600:
@@ -107,8 +108,8 @@ class GeminiSocket:
                     }
                     await self.ws.send(json.dumps(msg))
                     
-            except queue.Empty:
-                await asyncio.sleep(0.01)
+            except standard_queue.Empty:
+                await asyncio.sleep(0.005)  # Fast poll match to block size
             except Exception as e:
                 self._log(f"[Gemini Uplink Error] {e}")
                 break
@@ -123,9 +124,8 @@ class GeminiSocket:
                 data = json.loads(response)
                 
                 if "serverContent" not in data or "modelTurn" not in data.get("serverContent", {}):
-                    self._log(f"[RAW WS DEBUG] {json.dumps(data)}")
+                    pass
                 
-                # 1. Handle AUDIO and TEXT
                 if "serverContent" in data:
                     content = data["serverContent"]
 
@@ -149,12 +149,10 @@ class GeminiSocket:
                                     pcm_api = base64.b64decode(b64_audio)
                                     buffer_24k.extend(pcm_api)
                                     
-                    # Delegate downsampling to the AudioProcessor
                     audio_8k, buffer_24k = AudioProcessor.process_downlink_audio(buffer_24k)
                     if audio_8k:
                         self.pbx_inject_callback(audio_8k)
                         
-                # 2. Handle TOOL CALLS
                 if "toolCall" in data:
                     self.tool_call_pending = True
                     self._log("[Gemini] Tool Call received. Pausing audio uplink.")
@@ -174,7 +172,6 @@ class GeminiSocket:
                 break
 
     async def send_tool_response(self, call_id, name, result_data):
-        """Packages the execution result and sends it back to the AI."""
         response_msg = {
             "toolResponse": {
                 "functionResponses": [{
@@ -193,7 +190,6 @@ class GeminiSocket:
             self.tool_call_pending = False 
 
     async def request_summary_and_close(self, reason):
-        """Injects the command to execute the summary tool (STRICT NON-VERBAL ENFORCEMENT)."""
         if self.summary_requested:
             return
         
@@ -224,7 +220,6 @@ class GeminiSocket:
             self.is_connected = False
 
     async def send_system_event(self, text_event):
-        """Injects a text command into the live audio stream to guide AI behavior."""
         msg = {
             "clientContent": {
                 "turns": [{"role": "user", "parts": [{"text": f"SYSTEM EVENT: {text_event}"}]}],

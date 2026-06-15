@@ -1,6 +1,5 @@
 import threading
 import queue
-import asyncio
 import time
 import sounddevice as sd
 
@@ -10,8 +9,9 @@ class AudioBridge:
         self.blocksize = blocksize
         self.channels = channels
         
-        self.rx_queue = asyncio.Queue()  # PBX -> AI (Mic)
-        self.tx_buffer = bytearray()     # AI -> PBX (Speaker)
+        # Pure thread-safe queue eliminates cross-thread asyncio scheduling loop jitter
+        self.rx_queue = queue.Queue(maxsize=2000)  # PBX -> AI (Mic)
+        self.tx_buffer = bytearray()               # AI -> PBX (Speaker)
         self.tx_lock = threading.Lock()
         
         self._is_running = False
@@ -24,11 +24,10 @@ class AudioBridge:
         with self.tx_lock:
             self.tx_buffer.clear()
             
-        # Drain stale RX queues
         while not self.rx_queue.empty():
             try:
                 self.rx_queue.get_nowait()
-            except asyncio.QueueEmpty:
+            except queue.Empty:
                 break
                 
         self._is_running = True
@@ -51,12 +50,10 @@ class AudioBridge:
             self.tx_buffer.extend(pcm_8k_bytes)
 
     def _audio_stream_loop(self):
-        loop = asyncio.get_event_loop()
-
         def audio_callback(indata, outdata, frames, time_info, status):
             # --- RX PHASE: PulseAudio -> AI ---
             try:
-                loop.call_soon_threadsafe(self.rx_queue.put_nowait, bytes(indata))
+                self.rx_queue.put_nowait(bytes(indata))
             except queue.Full:
                 pass
 
@@ -81,4 +78,4 @@ class AudioBridge:
                 while self._is_running:
                     time.sleep(0.1)
         except Exception as e:
-            print(f"[AudioBridge] Fatal hardware stream failure: {e}")
+            print(f"[AudioBridge Info] Telephony stream interface released: {e}")

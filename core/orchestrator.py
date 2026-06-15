@@ -16,7 +16,8 @@ class SIPAgentOrchestrator:
             self.config.sip_port, 
             self.config.username, 
             self.config.password,
-            on_call_callback=self._handle_ringing_call
+            on_call_callback=self._handle_ringing_call,
+            loop=self.loop  # Pass loop reference explicitly
         )
         self.scheduler = BackgroundScheduler(self.db, self._initiate_outbound_call)
 

@@ -4,15 +4,15 @@ from telephony.baresip_ctrl import BaresipController, BaresipCallInstance
 from telephony.audio_bridge import AudioBridge
 
 class MediaEngine:
-    def __init__(self, sip_ip: str, sip_port: int, username: str, password: str, on_call_callback):
+    def __init__(self, sip_ip: str, sip_port: int, username: str, password: str, on_call_callback, loop: asyncio.AbstractEventLoop):
         self.sip_ip = sip_ip
         self.username = username
         self.on_call_callback = on_call_callback
+        self.loop = loop  # Stored loop reference for thread-safe signaling
         
         self.ctrl = BaresipController("127.0.0.1", 4444, self._handle_baresip_event)
         self.audio = AudioBridge()
         
-        # Critique 4 Fix: Moving away from single active_call limits
         self.active_calls = {} 
         self.pbx_to_ai_queue = self.audio.rx_queue
 
@@ -38,21 +38,19 @@ class MediaEngine:
             call_instance = BaresipCallInstance(peer_name, peer_num, call_id)
             self.active_calls[call_id] = call_instance
             
-            # Fire app loop callback to initialize CallSession
             self.on_call_callback(call_instance)
 
         elif ev_type == "CALL_ESTABLISHED":
             if call_id in self.active_calls:
                 call_obj = self.active_calls[call_id]
-                asyncio.get_event_loop().call_soon_threadsafe(call_obj.answered_event.set)
+                self.loop.call_soon_threadsafe(call_obj.answered_event.set)
 
         elif ev_type == "CALL_CLOSED":
             print(f"[MediaEngine] Event: Call {call_id} network dropped.")
             if call_id in self.active_calls:
                 call_obj = self.active_calls[call_id]
-                asyncio.get_event_loop().call_soon_threadsafe(call_obj.ended_event.set)
+                self.loop.call_soon_threadsafe(call_obj.ended_event.set)
                 
-                # Cleanup reference
                 del self.active_calls[call_id]
 
     def answer_call(self, call: BaresipCallInstance) -> bool:
@@ -85,7 +83,7 @@ class MediaEngine:
             del self.active_calls[call_id]
 
     def send_dtmf(self, digit: str):
-        self.ctrl.send_dtmf_udp(digit)
+        self.ctrl.send_cmd("dtmf", digit)
 
     def transfer_call(self, target_extension: str):
         print(f"[MediaEngine] Executing Blind Transfer to Extension: {target_extension}")

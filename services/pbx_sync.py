@@ -1,9 +1,9 @@
 import pymysql
 import asyncio
-from db.connection import DatabaseConnection
+import asyncpg  # Added import for correct type hinting
 
 class PBXSynchronizer:
-    def __init__(self, config, pool: DatabaseConnection.pool):
+    def __init__(self, config, pool: asyncpg.Pool):  # Fixed type hint
         self.config = config
         self.pool = pool
 
@@ -38,7 +38,6 @@ class PBXSynchronizer:
                 ext_num = str(ext['extension'])
                 name = ext['name']
                 
-                # Critique 2 Fix: Safely upsert without overwriting local hardware states
                 query = """
                     INSERT INTO Endpoints (extension, display_name, is_active)
                     VALUES ($1, $2, TRUE)
