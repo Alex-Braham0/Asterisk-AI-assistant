@@ -6,9 +6,9 @@ from ai.context_builder import ContextBuilder
 from tools.registry import ToolRegistry
 
 class CallSession:
-    def __init__(self, call, engine, config, db):
+    def __init__(self, call, channel, config, db):
         self.call = call
-        self.engine = engine
+        self.channel = channel
         self.config = config
         self.db = db
         
@@ -27,7 +27,6 @@ class CallSession:
         self.active_user_level = 0
 
     async def setup_connection(self, direction="inbound", target_info=None):
-        """Pre-warms the Gemini WebSocket connection before audio starts."""
         self.direction = direction
 
         if direction == "inbound":
@@ -36,17 +35,11 @@ class CallSession:
             caller_number = from_header.get('number', 'Unknown')
             caller = f"Name: {caller_name} | Extension: {caller_number}"
         else:
-            if isinstance(target_info, dict):
-                caller_number = str(target_info.get("extension", target_info.get("target_extension", "Unknown")))
-                caller = f"Target: {caller_number} | Context: {target_info.get('context', '')}"
-            else:
-                caller_number = str(target_info)
-                caller = f"Target: {caller_number}"
+            caller_number = str(target_info)
+            caller = f"Target: {caller_number}"
 
         self.target_extension = caller_number
-
         endpoint_data = await self.db.endpoints.get_endpoint(caller_number)
-        
         memory_content = "No specific memory file exists yet."
 
         if endpoint_data:
@@ -70,9 +63,9 @@ class CallSession:
 
         self.gemini_socket = GeminiSocket(
             api_key=self.config.gemini_api_key,
-            pbx_to_ai_queue=self.engine.pbx_to_ai_queue,
-            pbx_inject_callback=self.engine.inject_audio,
-            pbx_flush_callback=self.engine.flush_tx_buffer,
+            pbx_to_ai_queue=self.channel.pbx_to_ai_queue,
+            pbx_inject_callback=self.channel.inject_audio,
+            pbx_flush_callback=self.channel.flush_tx_buffer,
             tool_handler_callback=self._handle_tool_call,
             system_instruction=dynamic_prompt,
             tools=self.tool_registry.get_declarations()
@@ -86,9 +79,7 @@ class CallSession:
             return False
 
     async def run_bridge(self):
-        """Engages the RTP media and AI loops instantly."""
         if not self.call:
-            print("[CallSession] Error: Cannot bridge without a valid call object.")
             return
 
         self.bridge_start_time = time.time()
@@ -96,7 +87,7 @@ class CallSession:
 
         if self.direction == "inbound":
             await asyncio.sleep(2)
-            self.engine.answer_call(self.call)
+            self.channel.answer_call()
         else:
             if self.gemini_socket.is_connected:
                 await self.gemini_socket.send_system_event(
@@ -108,13 +99,10 @@ class CallSession:
         ))
         
         monitor_task = asyncio.create_task(self._monitor_call_state())
-        
         await self.call_dropped_event.wait()
         
-        print("[CallSession] Call hung up by remote party.")
         if self.gemini_socket.is_connected:
             await self.trigger_summary(reason="The user has hung up the phone.")
-            
             timeout = 10.0
             start_time = asyncio.get_event_loop().time()
             while self.gemini_socket.is_connected and (asyncio.get_event_loop().time() - start_time) < timeout:
@@ -127,7 +115,6 @@ class CallSession:
         try:
             result = await self.tool_registry.execute_tool(name, args)
         except Exception as e:
-            print(f"[CallSession] Tool Execution Exception: {e}")
             result = {"error": "Internal System Error", "details": str(e), "status": "failed"}
         
         if result is not None and self.gemini_socket.is_connected:
@@ -138,8 +125,7 @@ class CallSession:
     async def _monitor_call_state(self):
         try:
             call_id = getattr(self.call, '_id', None)
-            # FIX: Corrected to check the single active_call_id tracking variable
-            while call_id and call_id == self.engine.active_call_id:
+            while call_id and self.channel.active_call and call_id == getattr(self.channel.active_call, '_id', None):
                 await asyncio.sleep(0.1)
         finally:
             self.call_dropped_event.set()
@@ -147,21 +133,7 @@ class CallSession:
     def drop_call(self):
         call_id = getattr(self.call, '_id', None)
         if call_id:
-            self.engine.drop_call(call_id)
-
-    async def drain_audio_and_drop_call(self):
-        """Drains audio based on API turn status rather than arbitrary silence."""
-        print("[CallSession] Engaging dynamic audio drain...")
-        
-        if self.gemini_socket and self.gemini_socket.is_connected:
-            while self.gemini_socket.ai_speaking_event.is_set():
-                await asyncio.sleep(0.05)
-                
-        while len(self.engine.tx_buffer) > 0:
-            await asyncio.sleep(0.05)
-        
-        print("[CallSession] Turn complete and playback stream empty. Hanging up.")
-        self.drop_call()
+            self.channel.drop_call()
 
     async def trigger_summary(self, reason):
         if self.gemini_socket and self.gemini_socket.is_connected:
@@ -174,6 +146,73 @@ class CallSession:
             self.ai_task.cancel()
 
     def cleanup(self):
-        print("[CallSession] Cleaning up session resources...")
         self.drop_call()
         self.terminate_bridge()
+
+class HeadlessAgentSession:
+    def __init__(self, config, db, pool, mission_data):
+        self.config = config
+        self.db = db
+        self.orchestrator_pool = pool
+        self.mission_data = mission_data
+        
+        self.gemini_socket = None
+        self.tool_registry = ToolRegistry(self)  
+        
+        self.active_user_id = mission_data['owner_user_id']
+        self.target_extension = "HEADLESS_AGENT"
+
+    async def execute_mission(self):
+        user_memory = await self.db.users.get_user_memory(self.active_user_id, access_level="PRIVATE")
+        
+        system_prompt = f"""<role_and_identity>
+You are a headless, autonomous AI agent executing a background mission. You are NOT currently connected to an audio phone line. You must achieve your objective using your available tools.
+</role_and_identity>
+
+<mission_directive>
+{self.mission_data['mission_directive']}
+</mission_directive>
+
+<user_context>
+You are executing this on behalf of User ID: {self.active_user_id}.
+{user_memory}
+</user_context>
+
+<strict_directives>
+When you have completed the mission, or if you fail and cannot proceed, you MUST execute the 'mark_mission_complete' tool to terminate yourself.
+</strict_directives>"""
+
+        dummy_queue = asyncio.Queue()
+        self.gemini_socket = GeminiSocket(
+            api_key=self.config.gemini_api_key,
+            pbx_to_ai_queue=dummy_queue,
+            pbx_inject_callback=lambda x: None,
+            pbx_flush_callback=lambda: None,
+            tool_handler_callback=self._handle_tool_call,
+            system_instruction=system_prompt,
+            tools=self.tool_registry.get_declarations()
+        )
+
+        connected = await self.gemini_socket.connect()
+        if not connected:
+            return False
+        
+        ai_task = asyncio.create_task(self.gemini_socket.run_audio_bridge(on_disconnect_callback=lambda: None))
+        await self.gemini_socket.send_system_event("BEGIN MISSION EXECUTION NOW. Evaluate your tools and take your first step.")
+        
+        try:
+            await asyncio.wait_for(ai_task, timeout=300.0) 
+        except asyncio.TimeoutError:
+            self.gemini_socket.is_connected = False
+            
+        return True
+
+    async def _handle_tool_call(self, call_id, name, args):
+        print(f"[HeadlessAgent] Tool Execution: {name}({args})")
+        try:
+            result = await self.tool_registry.execute_tool(name, args)
+        except Exception as e:
+            result = {"error": str(e), "status": "failed"}
+            
+        if self.gemini_socket.is_connected:
+            await self.gemini_socket.send_tool_response(call_id, name, result)

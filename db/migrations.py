@@ -34,6 +34,15 @@ async def run_database_migrations(conn: asyncpg.Connection) -> None:
         scheduled_time TIMESTAMP NOT NULL,
         status VARCHAR(50) DEFAULT 'pending'
     );
+
+    CREATE TABLE IF NOT EXISTS Autonomous_Missions (
+        id SERIAL PRIMARY KEY,
+        owner_user_id INT REFERENCES Users(id) ON DELETE SET NULL,
+        run_at_utc TIMESTAMP NOT NULL,
+        mission_directive TEXT NOT NULL,
+        status VARCHAR(50) DEFAULT 'pending',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """
     await conn.execute(schema)
     

@@ -20,13 +20,16 @@ class DatabaseConnection:
                 await run_database_migrations(conn)
             
             # Lazy load repositories to break absolute circular dependency patterns
+            # Lazy load repositories to break absolute circular dependency patterns
             from db.repositories.users import UserRepository
             from db.repositories.endpoints import EndpointRepository
             from db.repositories.tasks import TaskRepository
+            from db.repositories.missions import MissionRepository # NEW
             
             self.users = UserRepository(self.pool)
             self.endpoints = EndpointRepository(self.pool)
             self.tasks = TaskRepository(self.pool)
+            self.missions = MissionRepository(self.pool) # NEW
 
     async def disconnect(self) -> None:
         if self.pool:

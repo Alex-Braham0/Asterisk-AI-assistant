@@ -1,7 +1,7 @@
-from tools.system import SubmitCallSummary, SetActiveUser, UpdateUserTimezone
-from tools.telephony import TransferCall, SendDTMF, EndCall
+from tools.system import SubmitCallSummary, SetActiveUser, UpdateUserTimezone, MarkMissionComplete
+from tools.telephony import TransferCall, SendDTMF, EndCall, ExecuteOutboundDial
 from tools.directory import SearchDirectory, SearchUsers
-from tools.scheduling import ScheduleOutboundCall, CancelScheduledCall
+from tools.scheduling import DelegateAutonomousTask
 from tools.external import CheckWeather
 from tools.identity import RegisterNewUser, UpdateEndpointContext
 
@@ -10,11 +10,11 @@ class ToolRegistry:
         self.session = session
         
         registered_classes = [
-            SubmitCallSummary, SetActiveUser, UpdateUserTimezone,
-            TransferCall, SendDTMF, EndCall,
+            SubmitCallSummary, SetActiveUser, UpdateUserTimezone, MarkMissionComplete,
+            TransferCall, SendDTMF, EndCall, ExecuteOutboundDial,
             SearchDirectory, SearchUsers,
             RegisterNewUser, UpdateEndpointContext,
-            ScheduleOutboundCall, CancelScheduledCall,
+            DelegateAutonomousTask,
             CheckWeather
         ]
         

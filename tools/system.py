@@ -139,3 +139,23 @@ class UpdateUserTimezone(BaseTool):
             await conn.execute(query, args['timezone'], user_id)
             
         return {"status": "success", "message": f"Timezone updated to {args['timezone']}."}
+    
+class MarkMissionComplete(BaseTool):
+    name = "mark_mission_complete"
+    description = "MUST BE USED when your mission is fully accomplished or permanently failed. Terminates your autonomous session."
+    auth_level = 10
+    parameters = {
+        "type": "OBJECT",
+        "properties": {
+            "final_report": {
+                "type": "STRING", 
+                "description": "A detailed summary of what you achieved or why you failed."
+            }
+        },
+        "required": ["final_report"]
+    }
+
+    async def execute(self, session, args):
+        print(f"[Swarm Worker] Agent Self-Terminated. Final Report: {args.get('final_report')}")
+        session.gemini_socket.is_connected = False
+        return {"status": "success"}
