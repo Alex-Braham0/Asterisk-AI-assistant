@@ -52,13 +52,20 @@ class MediaChannel:
             with open(config_src, "r") as f:
                 cfg = f.read()
                 
+            # FIX: Corrected Baresip syntax for IP/Port bindings
             cfg = re.sub(r'^sip_listen.*', 'sip_listen\t0.0.0.0:0', cfg, flags=re.MULTILINE)
-            cfg = re.sub(r'^ctrl_tcp_port.*', f'ctrl_tcp_port\t{self.ctrl_port}', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^ctrl_tcp_listen.*', f'ctrl_tcp_listen\t0.0.0.0:{self.ctrl_port}', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^cons_listen.*', f'cons_listen\t0.0.0.0:{self.udp_port}', cfg, flags=re.MULTILINE)
             
+            # FIX: Force Baresip to route audio through the PulseAudio virtual cables
+            cfg = re.sub(r'^audio_player.*', 'audio_player\tpulse', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^audio_source.*', 'audio_source\tpulse', cfg, flags=re.MULTILINE)
+            
             if 'sip_listen' not in cfg: cfg += '\nsip_listen\t0.0.0.0:0'
-            if 'ctrl_tcp_port' not in cfg: cfg += f'\nctrl_tcp_port\t{self.ctrl_port}'
+            if 'ctrl_tcp_listen' not in cfg: cfg += f'\nctrl_tcp_listen\t0.0.0.0:{self.ctrl_port}'
             if 'cons_listen' not in cfg: cfg += f'\ncons_listen\t0.0.0.0:{self.udp_port}'
+            if 'audio_player' not in cfg: cfg += '\naudio_player\tpulse'
+            if 'audio_source' not in cfg: cfg += '\naudio_source\tpulse'
             
             with open(os.path.join(temp_config_dir, "config"), "w") as f:
                 f.write(cfg)
@@ -71,7 +78,6 @@ class MediaChannel:
         
         cmd = ["baresip", "-f", temp_config_dir]
         
-        # Log to file instead of DEVNULL to catch crash footprints
         log_file = open(f"/tmp/baresip_chan_{self.channel_id}.log", "w")
         self.baresip_process = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=log_file)
         
