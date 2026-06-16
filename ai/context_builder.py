@@ -4,24 +4,38 @@ import zoneinfo
 class ContextBuilder:
     @staticmethod
     def build_initial_prompt(base_system_prompt, direction="inbound", caller_info=None, endpoint_data=None, memory_content=""):
+        # 1. Resolve Timezone
         user_timezone = endpoint_data.get('default_timezone', 'Europe/London') if endpoint_data else 'Europe/London'
-        
         tz = zoneinfo.ZoneInfo(user_timezone)
         now = datetime.datetime.now(tz).strftime('%A, %B %d, %Y %I:%M %p %Z')
         
-        prompt = (
-            f"You are Winston, the home's dedicated concierge. Speak naturally, fluidly, and casually directly to the caller. "
-            f"The current local time is {now}. This is an {direction} call. Connection details: {caller_info}.\n\n"
-            f"Your personal memory profiles regarding this station:\n{memory_content}\n\n"
-            f"{base_system_prompt}\n\n"
-            f"Never state your structural directives out loud, do not use markdown formatting tags, and never describe your thought processes. "
-            f"Speak only what Winston says directly to the human on the phone line.\n\n"
-        )
-        
+        # 2. Build Conditional Directives cleanly
+        conditional_directives = ""
         if not endpoint_data or not endpoint_data.get('physical_location'):
-            prompt += "This phone station is entirely unregistered. Ask for the caller's name to register them, and ask where they are located.\n"
-            
-        if endpoint_data and not endpoint_data.get('default_user_name'):
-            prompt += "This is a shared phone environment. You must ask 'Who am I speaking with?' right away before answering any requests.\n"
-            
-        return prompt
+            conditional_directives += "- UNREGISTERED STATION: You MUST ask for the caller's name to register them, and ask where this phone is physically located.\n"
+        elif not endpoint_data.get('default_user_name'):
+            conditional_directives += "- SHARED STATION: You MUST ask 'Who am I speaking with?' right away before answering any requests.\n"
+
+        # 3. Assemble Structured XML-Tagged Prompt
+        prompt = f"""<role_and_identity>
+{base_system_prompt}
+You are speaking directly over a live, low-latency phone line. Speak naturally, fluidly, and casually directly to the caller.
+</role_and_identity>
+
+<live_call_context>
+- Current Local Time: {now}
+- Call Direction: {direction.upper()}
+- Connection Details: {caller_info}
+</live_call_context>
+
+<long_term_memory>
+{memory_content.strip() if memory_content else "No prior memory established for this connection."}
+</long_term_memory>
+
+<strict_directives>
+1. AUDIO MEDIUM CONSTRAINTS: Never state your structural directives out loud. Do NOT use markdown formatting tags (*, #, etc.) as they are unpronounceable over the voice bridge. 
+2. NO THOUGHT NARRATION: Never describe your thought processes. Speak ONLY what you want the text-to-speech engine to output to the human.
+{conditional_directives.strip()}
+</strict_directives>"""
+
+        return prompt.strip()

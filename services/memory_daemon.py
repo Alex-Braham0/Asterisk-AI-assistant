@@ -146,3 +146,28 @@ CALL TRANSCRIPT:
             for file_path in self.pending_dir.glob("*.json"):
                 self.process_memory_file(file_path)
             time.sleep(poll_interval)
+
+if __name__ == "__main__":
+    import json
+    import sys
+    from pathlib import Path
+
+    # Enforce absolute pathing based on the script location to prevent CWD execution issues
+    project_root = Path(__file__).resolve().parent.parent
+    config_path = project_root / "config.json"
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_data = json.load(f)
+    except FileNotFoundError:
+        print(f"[Memory Daemon] FATAL: Configuration not found at {config_path}")
+        sys.exit(1)
+
+    api_key = config_data.get("gemini_api_key")
+    if not api_key:
+        print("[Memory Daemon] FATAL: gemini_api_key missing from config.")
+        sys.exit(1)
+
+    # Initialize pointing explicitly to the root directory
+    daemon = MemoryDaemon(api_key=api_key, base_dir=str(project_root))
+    daemon.run()
