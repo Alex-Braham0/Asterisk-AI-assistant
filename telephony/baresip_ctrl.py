@@ -2,7 +2,6 @@ import socket
 import json
 import time
 import threading
-import traceback
 
 class MockSIPRequest:
     def __init__(self, caller_name, caller_number):
@@ -20,7 +19,6 @@ class BaresipCallInstance:
         self.ended_event = asyncio.Event()
 
     def deny(self):
-        # Fallback handled by upper engine layer
         pass
 
 class BaresipController:
@@ -28,6 +26,7 @@ class BaresipController:
         self.ctrl_host = ctrl_host
         self.ctrl_port = ctrl_port
         self.event_callback = event_callback
+        self.udp_port = 5555  # Will be dynamically overwritten by the MediaChannel
         self._is_running = False
         self.listener_thread = None
 
@@ -42,7 +41,6 @@ class BaresipController:
             self.listener_thread.join(timeout=2.0)
 
     def send_cmd(self, command: str, params: str = "") -> bool:
-        """Sends a command using a guaranteed fresh socket with retry logic."""
         payload = {"command": command.strip().replace('/', ''), "params": params.strip()}
         json_payload = json.dumps(payload)
         netstring_payload = f"{len(json_payload)}:{json_payload},"
@@ -59,18 +57,18 @@ class BaresipController:
                         time.sleep(0.2)
                         continue
                     return True
-            except Exception as e:
+            except Exception:
                 time.sleep(0.2)
                 
         print(f"[BaresipCtrl] CRITICAL: Failed to send command '{command}' after {max_retries} attempts.")
         return False
 
     def send_dtmf_udp(self, digit: str):
-        """Bypasses TCP to inject instant raw DTMF via Baresip's UDP console module."""
         clean_digit = str(digit).strip()[0]
         try:
             udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            udp_sock.sendto(clean_digit.encode('utf-8'), ("127.0.0.1", 5555))
+            # Use the dynamic UDP port tied to this specific channel
+            udp_sock.sendto(clean_digit.encode('utf-8'), ("127.0.0.1", self.udp_port))
             udp_sock.close()
         except Exception as e:
             print(f"[BaresipCtrl] Failed to send UDP DTMF: {e}")
