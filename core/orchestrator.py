@@ -11,7 +11,6 @@ class SIPAgentOrchestrator:
         self.db = db
         self.loop = loop
         self.state_manager = CallStateManager()
-        
         self.seen_caller_numbers = set()
         
         self.pool = ChannelPoolManager(capacity=5, config=self.config, loop=self.loop, inbound_handler=self._handle_ringing_call)
@@ -34,15 +33,20 @@ class SIPAgentOrchestrator:
         call_id = getattr(call, '_id', 'Unknown')
         caller_number = call.request.headers.get('From', {}).get('number', 'Unknown')
         
+        # THE FIX: Actively reject any inbound calls Asterisk accidentally sends to the background workers.
+        # This instantly forces Asterisk to try the next line until it hits the Leader.
+        if channel.channel_id != 0:
+            print(f"[Swarm Routing] Headless Worker {channel.channel_id} actively rejecting inbound human call.")
+            channel.drop_call()
+            return
+            
         if caller_number in self.seen_caller_numbers:
-            # FIX: Actively reject the redundant channels so Asterisk focuses on the active one
-            print(f"[Swarm Deduplicator] Rejecting redundant Asterisk ring on Channel {channel.channel_id}")
             channel.drop_call()
             return
             
         self.seen_caller_numbers.add(caller_number)
         
-        print(f"\n[App] Inbound call incoming on Channel {channel.channel_id}. Initializing line track ID: {call_id}...")
+        print(f"\n[App] Inbound call incoming on Leader Channel {channel.channel_id}. Initializing line track ID: {call_id}...")
         future = asyncio.run_coroutine_threadsafe(self._process_inbound_call(channel, call, caller_number), self.loop)
         
         def check_handler_exception(f):
@@ -56,13 +60,13 @@ class SIPAgentOrchestrator:
         future.add_done_callback(check_handler_exception)
 
     async def _process_inbound_call(self, channel, call, caller_number) -> None:
-        channel.answer_call()
         session = CallSession(call, channel, self.config, self.db)
         call_id = getattr(call, '_id', None)
         
         if call_id:
             await self.state_manager.register_session(call_id, session)
             
+        # Allow the human to hear the ringing tone while the AI connects to Google's servers.
         connected = await session.setup_connection(direction="inbound")
         
         if connected:

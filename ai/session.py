@@ -86,7 +86,9 @@ class CallSession:
         self.bridge_start_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if self.direction == "inbound":
-            pass
+            # THE FIX: Answer the physical line only after Gemini has successfully connected.
+            print("[CallSession] Gemini AI initialized. Answering Asterisk line now.")
+            self.channel.answer_call()
         else:
             if self.gemini_socket.is_connected:
                 await self.gemini_socket.send_system_event(
