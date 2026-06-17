@@ -40,14 +40,11 @@ class MediaChannel:
         
         os.makedirs(temp_config_dir, exist_ok=True)
         
-        # Clone core authentication files
         for filename in ["accounts", "contacts"]:
             src = os.path.join(base_config_dir, filename)
             if os.path.exists(src):
                 shutil.copy(src, os.path.join(temp_config_dir, filename))
                 
-        # Clone and patch config to prevent TCP/UDP and SIP port collisions
-        # Clone and patch config to prevent TCP/UDP and SIP port collisions
         config_src = os.path.join(base_config_dir, "config")
         if os.path.exists(config_src):
             with open(config_src, "r") as f:
@@ -57,16 +54,17 @@ class MediaChannel:
             cfg = re.sub(r'^ctrl_tcp_listen.*', f'ctrl_tcp_listen\t0.0.0.0:{self.ctrl_port}', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^cons_listen.*', f'cons_listen\t0.0.0.0:{self.udp_port}', cfg, flags=re.MULTILINE)
             
-            cfg = re.sub(r'^audio_player.*', 'audio_player\tpulse', cfg, flags=re.MULTILINE)
-            cfg = re.sub(r'^audio_source.*', 'audio_source\tpulse', cfg, flags=re.MULTILINE)
+            # FIX: Explicitly bind the EXACT PulseAudio virtual cable names to Baresip
+            cfg = re.sub(r'^audio_player.*', f'audio_player\tpulse,{self.tx_name}', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^audio_source.*', f'audio_source\tpulse,{self.rx_name}', cfg, flags=re.MULTILINE)
             
             if 'sip_listen' not in cfg: cfg += '\nsip_listen\t0.0.0.0:0'
             if 'ctrl_tcp_listen' not in cfg: cfg += f'\nctrl_tcp_listen\t0.0.0.0:{self.ctrl_port}'
             if 'cons_listen' not in cfg: cfg += f'\ncons_listen\t0.0.0.0:{self.udp_port}'
-            if 'audio_player' not in cfg: cfg += '\naudio_player\tpulse'
-            if 'audio_source' not in cfg: cfg += '\naudio_source\tpulse'
+            if 'audio_player' not in cfg: cfg += f'\naudio_player\tpulse,{self.tx_name}'
+            if 'audio_source' not in cfg: cfg += f'\naudio_source\tpulse,{self.rx_name}'
             
-            # FORCE LOAD REQUIRED MODULES
+            # Prevent the "module already loaded" warnings
             if 'module ctrl_tcp.so' not in cfg: cfg += '\nmodule ctrl_tcp.so'
             if 'module cons.so' not in cfg: cfg += '\nmodule cons.so'
             
@@ -75,14 +73,10 @@ class MediaChannel:
         else:
             print(f"[Channel {self.channel_id}] CRITICAL WARNING: No base config found at {config_src}")
 
-        env = os.environ.copy()
-        env["PULSE_SINK"] = self.tx_name
-        env["PULSE_SOURCE"] = self.rx_name
-        
         cmd = ["baresip", "-f", temp_config_dir]
         
         log_file = open(f"/tmp/baresip_chan_{self.channel_id}.log", "w")
-        self.baresip_process = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=log_file)
+        self.baresip_process = subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
         
         time.sleep(1.5) 
         self.ctrl.start()

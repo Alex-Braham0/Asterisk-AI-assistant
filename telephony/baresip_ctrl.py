@@ -26,7 +26,7 @@ class BaresipController:
         self.ctrl_host = ctrl_host
         self.ctrl_port = ctrl_port
         self.event_callback = event_callback
-        self.udp_port = 5555  # Will be dynamically overwritten by the MediaChannel
+        self.udp_port = 5555  
         self._is_running = False
         self.listener_thread = None
 
@@ -67,13 +67,14 @@ class BaresipController:
         clean_digit = str(digit).strip()[0]
         try:
             udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            # Use the dynamic UDP port tied to this specific channel
             udp_sock.sendto(clean_digit.encode('utf-8'), ("127.0.0.1", self.udp_port))
             udp_sock.close()
         except Exception as e:
             print(f"[BaresipCtrl] Failed to send UDP DTMF: {e}")
 
     def _listener_loop(self):
+        # FIX: Wait for Baresip to finish booting and SIP registration before connecting
+        time.sleep(2) 
         while self._is_running:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
