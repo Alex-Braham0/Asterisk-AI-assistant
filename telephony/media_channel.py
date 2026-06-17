@@ -44,7 +44,6 @@ class MediaChannel:
         import shutil
         import re
         
-        # Clone and patch the Accounts file for Leader/Worker SIP Registration
         base_accounts = os.path.join(base_config_dir, "accounts")
         if os.path.exists(base_accounts):
             with open(base_accounts, "r") as f:
@@ -56,10 +55,8 @@ class MediaChannel:
                     new_lines.append(line)
                     continue
                 
-                # Strip existing registration flags
                 line = re.sub(r';regint=\d+', '', line.strip())
                 
-                # Channel 0 is the Leader (Registers for Inbound). Channels 1-4 are Headless (Outbound Only).
                 if self.channel_id == 0:
                     line += ';regint=3600\n'
                 else:
@@ -69,7 +66,6 @@ class MediaChannel:
             with open(os.path.join(temp_config_dir, "accounts"), "w") as f:
                 f.writelines(new_lines)
                 
-        # Clone Contacts
         src_contacts = os.path.join(base_config_dir, "contacts")
         if os.path.exists(src_contacts):
             shutil.copy(src_contacts, os.path.join(temp_config_dir, "contacts"))
@@ -92,12 +88,9 @@ class MediaChannel:
             
             cfg += '\n\n# --- DYNAMIC SWARM INJECTIONS ---'
             
-            # Leader gets a static port, Workers get ephemeral ports to prevent routing collision
-            if self.channel_id == 0:
-                cfg += f'\nsip_listen\t0.0.0.0:{self.sip_port}'
-            else:
-                cfg += '\nsip_listen\t0.0.0.0:0'
-                
+            # FIX: Use ephemeral SIP ports to bypass OS-level port locks.
+            cfg += '\nsip_listen\t0.0.0.0:0'
+            
             cfg += f'\nctrl_tcp_bind\t0.0.0.0:{self.ctrl_port}'  
             cfg += f'\ncons_listen\t0.0.0.0:{self.udp_port}'
             
@@ -120,6 +113,7 @@ class MediaChannel:
         log_file = open(f"/tmp/baresip_chan_{self.channel_id}.log", "w")
         self.baresip_process = subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
         
+        import time
         time.sleep(1.5) 
         self.ctrl.start()
         
