@@ -18,6 +18,8 @@ class MediaChannel:
         
         self.ctrl_port = 4440 + channel_id
         self.udp_port = 5550 + channel_id
+        self.sip_port = 5060 + channel_id
+
         self.tx_name = f"Baresip_Tx_{channel_id}"
         self.rx_name = f"Baresip_Rx_{channel_id}.monitor"
         
@@ -63,7 +65,7 @@ class MediaChannel:
             cfg = re.sub(r'^[#\s]*module\s+cons\.so.*', '', cfg, flags=re.MULTILINE)
             
             cfg += '\n\n# --- DYNAMIC SWARM INJECTIONS ---'
-            cfg += '\nsip_listen\t0.0.0.0:0'
+            cfg += f'\nsip_listen\t0.0.0.0:{self.sip_port}'
             cfg += f'\nctrl_tcp_bind\t0.0.0.0:{self.ctrl_port}'  
             cfg += f'\ncons_listen\t0.0.0.0:{self.udp_port}'
             
