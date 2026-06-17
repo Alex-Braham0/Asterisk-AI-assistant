@@ -42,17 +42,27 @@ class SIPAgentOrchestrator:
         future.add_done_callback(lambda f: f.exception() and print(f"App Error: {f.exception()}"))
 
     async def _process_inbound_call(self, engine, call) -> None:
-        async with self.line_lock: # Claim the line for the human
-            session = CallSession(call, engine, self.config, self.db)
-            call_id = getattr(call, '_id', None)
-            
-            if call_id: await self.state_manager.register_session(call_id, session)
-            
-            connected = await session.setup_connection(direction="inbound")
-            if connected:
-                try: await session.run_bridge()
-                finally: 
+        async with self.line_lock:
+            try:
+                session = CallSession(call, engine, self.config, self.db)
+                call_id = getattr(call, '_id', None)
+                
+                if call_id: await self.state_manager.register_session(call_id, session)
+                
+                connected = await session.setup_connection(direction="inbound")
+                if connected:
+                    try: 
+                        await session.run_bridge()
+                    finally: 
+                        if call_id: await self.state_manager.unregister_session(call_id)
+                else:
+                    engine.drop_call()
                     if call_id: await self.state_manager.unregister_session(call_id)
-            else:
-                engine.drop_call()
-                if call_id: await self.state_manager.unregister_session(call_id)
+            finally:
+                # CRITICAL: Purge stale audio buffers before releasing the lock to the next caller
+                engine.flush_tx_buffer()
+                while not engine.pbx_to_ai_queue.empty():
+                    try:
+                        engine.pbx_to_ai_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break

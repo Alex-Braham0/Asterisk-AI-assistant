@@ -26,12 +26,13 @@ class MediaEngine:
 
     def _init_virtual_cables(self):
         print("[MediaEngine] Initializing PulseAudio virtual cables...")
-        # Purge dead cables from previous sessions to prevent ghosting
         subprocess.run("pactl list short modules | grep null-sink | cut -f1 | xargs -L1 pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
         
-        # Allocate fresh virtual cables
-        subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], stdout=subprocess.DEVNULL)
-        subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Rx", "sink_properties=device.description=Baresip_Rx"], stdout=subprocess.DEVNULL)
+        tx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], capture_output=True, text=True)
+        rx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Rx", "sink_properties=device.description=Baresip_Rx"], capture_output=True, text=True)
+        
+        if tx_result.returncode != 0 or rx_result.returncode != 0:
+            raise RuntimeError(f"FATAL: PulseAudio cable allocation failed.\nTx Error: {tx_result.stderr}\nRx Error: {rx_result.stderr}")
 
     def start(self):
         self._init_virtual_cables()
@@ -53,10 +54,20 @@ class MediaEngine:
         self.ctrl.start()
 
     def stop(self):
-        if self.active_call: self.drop_call()
+        if self.active_call: 
+            self.drop_call()
         self.ctrl.stop()
+        self._stop_audio_stream()
+        
         if self.baresip_process:
             self.baresip_process.terminate()
+            try:
+                # Wait up to 3 seconds for graceful shutdown
+                self.baresip_process.wait(timeout=3.0)
+            except subprocess.TimeoutExpired:
+                print("[MediaEngine] Baresip failed to terminate gracefully. Force killing.")
+                self.baresip_process.kill()
+                self.baresip_process.wait()
 
     def _handle_event(self, event: dict):
         ev_type = event.get("type", "")

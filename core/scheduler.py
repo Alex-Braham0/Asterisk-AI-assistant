@@ -22,10 +22,20 @@ class BackgroundScheduler:
                     
                     if mission:
                         print(f"\n[Swarm Worker] ⚡ Spawning Headless Agent for Mission {mission['id']}")
+                        
                         # Claim the line lock so humans can't interrupt the mission
                         async with self.orchestrator.line_lock:
-                            await self._process_mission(mission)
-                            
+                            try:
+                                await self._process_mission(mission)
+                            finally:
+                                # CRITICAL: Purge stale audio buffers before releasing the lock to the next caller
+                                self.orchestrator.engine.flush_tx_buffer()
+                                while not self.orchestrator.engine.pbx_to_ai_queue.empty():
+                                    try:
+                                        self.orchestrator.engine.pbx_to_ai_queue.get_nowait()
+                                    except asyncio.QueueEmpty:
+                                        break
+                                        
             except Exception as e:
                 print(f"[Swarm Worker Error] {e}")
                 
