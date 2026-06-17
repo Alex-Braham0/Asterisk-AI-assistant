@@ -47,17 +47,16 @@ class MediaChannel:
                 shutil.copy(src, os.path.join(temp_config_dir, filename))
                 
         # Clone and patch config to prevent TCP/UDP and SIP port collisions
+        # Clone and patch config to prevent TCP/UDP and SIP port collisions
         config_src = os.path.join(base_config_dir, "config")
         if os.path.exists(config_src):
             with open(config_src, "r") as f:
                 cfg = f.read()
                 
-            # FIX: Corrected Baresip syntax for IP/Port bindings
             cfg = re.sub(r'^sip_listen.*', 'sip_listen\t0.0.0.0:0', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^ctrl_tcp_listen.*', f'ctrl_tcp_listen\t0.0.0.0:{self.ctrl_port}', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^cons_listen.*', f'cons_listen\t0.0.0.0:{self.udp_port}', cfg, flags=re.MULTILINE)
             
-            # FIX: Force Baresip to route audio through the PulseAudio virtual cables
             cfg = re.sub(r'^audio_player.*', 'audio_player\tpulse', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^audio_source.*', 'audio_source\tpulse', cfg, flags=re.MULTILINE)
             
@@ -66,6 +65,10 @@ class MediaChannel:
             if 'cons_listen' not in cfg: cfg += f'\ncons_listen\t0.0.0.0:{self.udp_port}'
             if 'audio_player' not in cfg: cfg += '\naudio_player\tpulse'
             if 'audio_source' not in cfg: cfg += '\naudio_source\tpulse'
+            
+            # FORCE LOAD REQUIRED MODULES
+            if 'module ctrl_tcp.so' not in cfg: cfg += '\nmodule ctrl_tcp.so'
+            if 'module cons.so' not in cfg: cfg += '\nmodule cons.so'
             
             with open(os.path.join(temp_config_dir, "config"), "w") as f:
                 f.write(cfg)
