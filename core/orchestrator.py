@@ -12,7 +12,6 @@ class SIPAgentOrchestrator:
         self.loop = loop
         self.state_manager = CallStateManager()
         
-        # Track active Caller IDs to prevent multiple AI spawns for a single call
         self.seen_caller_numbers = set()
         
         self.pool = ChannelPoolManager(capacity=5, config=self.config, loop=self.loop, inbound_handler=self._handle_ringing_call)
@@ -33,11 +32,12 @@ class SIPAgentOrchestrator:
 
     def _handle_ringing_call(self, channel, call) -> None:
         call_id = getattr(call, '_id', 'Unknown')
-        
-        # Baresip generates random UUIDs for call._id. We must deduplicate by Caller Number.
         caller_number = call.request.headers.get('From', {}).get('number', 'Unknown')
         
         if caller_number in self.seen_caller_numbers:
+            # FIX: Actively reject the redundant channels so Asterisk focuses on the active one
+            print(f"[Swarm Deduplicator] Rejecting redundant Asterisk ring on Channel {channel.channel_id}")
+            channel.drop_call()
             return
             
         self.seen_caller_numbers.add(caller_number)
@@ -70,12 +70,11 @@ class SIPAgentOrchestrator:
             finally:
                 if call_id:
                     await self.state_manager.unregister_session(call_id)
-                # Release the deduplication lock so they can call again later
                 if caller_number in self.seen_caller_numbers:
                     self.seen_caller_numbers.remove(caller_number)
         else:
             try:
-                call.deny()
+                channel.drop_call()
             except Exception:
                 pass
             if call_id:
