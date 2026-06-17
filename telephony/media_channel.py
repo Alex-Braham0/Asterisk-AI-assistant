@@ -59,6 +59,7 @@ class MediaChannel:
             cfg = re.sub(r'^[#\s]*cons_listen.*', '', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^[#\s]*audio_player.*', '', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^[#\s]*audio_source.*', '', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^[#\s]*rtp_ports.*', '', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^[#\s]*module_app\s+ctrl_tcp\.so.*', '', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^[#\s]*module\s+ctrl_tcp\.so.*', '', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^[#\s]*module_app\s+cons\.so.*', '', cfg, flags=re.MULTILINE)
@@ -69,7 +70,11 @@ class MediaChannel:
             cfg += f'\nctrl_tcp_bind\t0.0.0.0:{self.ctrl_port}'  
             cfg += f'\ncons_listen\t0.0.0.0:{self.udp_port}'
             
-            # FIX: Correct the crossed-wires in PulseAudio virtual cables
+            # NEW: Strict RTP media isolation boundaries
+            rtp_start = 10000 + (self.channel_id * 20)
+            rtp_end = rtp_start + 10
+            cfg += f'\nrtp_ports\t{rtp_start}-{rtp_end}'
+            
             baresip_speaker = f"Baresip_Rx_{self.channel_id}"
             baresip_mic = f"Baresip_Tx_{self.channel_id}.monitor"
             cfg += f'\naudio_player\tpulse,{baresip_speaker}'
@@ -88,9 +93,10 @@ class MediaChannel:
         log_file = open(f"/tmp/baresip_chan_{self.channel_id}.log", "w")
         self.baresip_process = subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
         
+        import time
         time.sleep(1.5) 
         self.ctrl.start()
-        print(f"[Channel {self.channel_id}] Baresip subprocess online (TCP: {self.ctrl_port}, UDP: {self.udp_port}).")
+        print(f"[Channel {self.channel_id}] Baresip subprocess online (SIP: {self.sip_port}, RTP: {rtp_start}-{rtp_end}).")
 
     def shutdown(self):
         if self.active_call:
