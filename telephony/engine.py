@@ -24,41 +24,28 @@ class MediaEngine:
         self.audio_thread = None
         self._audio_running = False
 
-        # Target names for the PulseAudio Virtual Cables
-        self.tx_name = "Baresip_Tx"
-        self.rx_name = "Baresip_Rx.monitor"
-
     def _init_virtual_cables(self):
         print("[MediaEngine] Initializing PulseAudio virtual cables...")
-        # Purge dead cables from previous crashes
+        # Purge dead cables from previous sessions to prevent ghosting
         subprocess.run("pactl list short modules | grep null-sink | cut -f1 | xargs -L1 pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
+        
         # Allocate fresh virtual cables
         subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], stdout=subprocess.DEVNULL)
         subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Rx", "sink_properties=device.description=Baresip_Rx"], stdout=subprocess.DEVNULL)
-
-    def _get_device_indices(self) -> tuple[int, int]:
-        devices = sd.query_devices()
-        in_idx = out_idx = None
-        
-        for idx, dev in enumerate(devices):
-            if self.rx_name in dev['name'] and dev['max_input_channels'] > 0:
-                in_idx = idx
-            if "Baresip_Tx" in dev['name'] and dev['max_output_channels'] > 0:
-                out_idx = idx
-                
-        if in_idx is None or out_idx is None:
-            raise RuntimeError(f"PulseAudio devices {self.rx_name} / Baresip_Tx not found by sounddevice. Ensure PulseAudio is running.")
-            
-        return in_idx, out_idx
 
     def start(self):
         self._init_virtual_cables()
         print("[MediaEngine] Booting Singleton Baresip Engine...")
         
-        # Inject PulseAudio routing directly into the Baresip process
+        # THE FIX: Route Python's global audio strictly to the virtual cables via OS environment variables.
+        # This completely bypasses PortAudio's flaky device discovery cache.
+        os.environ["PULSE_SINK"] = "Baresip_Tx"
+        os.environ["PULSE_SOURCE"] = "Baresip_Rx.monitor"
+        
+        # Inject the INVERSE routing into the Baresip process so they cross-talk perfectly
         env = os.environ.copy()
-        env["PULSE_SINK"] = "Baresip_Rx"            # Baresip outputs human audio to Rx
-        env["PULSE_SOURCE"] = "Baresip_Tx.monitor"  # Baresip listens to AI audio from Tx
+        env["PULSE_SINK"] = "Baresip_Rx"            
+        env["PULSE_SOURCE"] = "Baresip_Tx.monitor"  
 
         cmd = ["baresip"]
         self.baresip_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -126,16 +113,14 @@ class MediaEngine:
             try: self.pbx_to_ai_queue.get_nowait()
             except asyncio.QueueEmpty: break
             
-        in_idx, out_idx = self._get_device_indices()
-        
-        self.audio_thread = threading.Thread(target=self._stream_worker, args=(in_idx, out_idx), daemon=True)
+        self.audio_thread = threading.Thread(target=self._stream_worker, daemon=True)
         self.audio_thread.start()
 
     def _stop_audio_stream(self):
         self._audio_running = False
         if self.audio_thread: self.audio_thread.join(timeout=1.0)
 
-    def _stream_worker(self, in_idx, out_idx):
+    def _stream_worker(self):
         def callback(indata, outdata, frames, time_info, status):
             req_bytes = frames * 2  
             ai_speaking = False
@@ -153,8 +138,9 @@ class MediaEngine:
                 except asyncio.QueueFull: pass
 
         try:
-            # Bind exclusively to the PulseAudio virtual cables
-            with sd.RawStream(device=(in_idx, out_idx), samplerate=8000, blocksize=160, channels=1, dtype='int16', callback=callback, latency='low'):
+            # Using device=None forces Python to use the OS default.
+            # Because we set the PULSE_SINK/SOURCE environment variables, the OS will perfectly steer it into our virtual cables.
+            with sd.RawStream(samplerate=8000, blocksize=160, channels=1, dtype='int16', callback=callback, latency='low'):
                 while self._audio_running: time.sleep(0.1)
         except Exception as e:
             print(f"[MediaEngine] Audio stream crash: {e}")
