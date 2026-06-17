@@ -86,8 +86,7 @@ class CallSession:
         self.bridge_start_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if self.direction == "inbound":
-            await asyncio.sleep(2)
-            self.channel.answer_call()
+            pass
         else:
             if self.gemini_socket.is_connected:
                 await self.gemini_socket.send_system_event(

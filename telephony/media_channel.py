@@ -39,21 +39,46 @@ class MediaChannel:
     def boot_subprocess(self):
         base_config_dir = os.path.expanduser("~/.baresip")
         temp_config_dir = f"/tmp/baresip_chan_{self.channel_id}"
-        
         os.makedirs(temp_config_dir, exist_ok=True)
         
-        for filename in ["accounts", "contacts"]:
-            src = os.path.join(base_config_dir, filename)
-            if os.path.exists(src):
-                import shutil
-                shutil.copy(src, os.path.join(temp_config_dir, filename))
+        import shutil
+        import re
+        
+        # Clone and patch the Accounts file for Leader/Worker SIP Registration
+        base_accounts = os.path.join(base_config_dir, "accounts")
+        if os.path.exists(base_accounts):
+            with open(base_accounts, "r") as f:
+                lines = f.readlines()
+            
+            new_lines = []
+            for line in lines:
+                if not line.strip() or line.startswith('#'):
+                    new_lines.append(line)
+                    continue
+                
+                # Strip existing registration flags
+                line = re.sub(r';regint=\d+', '', line.strip())
+                
+                # Channel 0 is the Leader (Registers for Inbound). Channels 1-4 are Headless (Outbound Only).
+                if self.channel_id == 0:
+                    line += ';regint=3600\n'
+                else:
+                    line += ';regint=0\n'
+                new_lines.append(line)
+                
+            with open(os.path.join(temp_config_dir, "accounts"), "w") as f:
+                f.writelines(new_lines)
+                
+        # Clone Contacts
+        src_contacts = os.path.join(base_config_dir, "contacts")
+        if os.path.exists(src_contacts):
+            shutil.copy(src_contacts, os.path.join(temp_config_dir, "contacts"))
                 
         config_src = os.path.join(base_config_dir, "config")
         if os.path.exists(config_src):
             with open(config_src, "r") as f:
                 cfg = f.read()
                 
-            import re
             cfg = re.sub(r'^[#\s]*sip_listen.*', '', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^[#\s]*ctrl_tcp_.*', '', cfg, flags=re.MULTILINE)
             cfg = re.sub(r'^[#\s]*cons_listen.*', '', cfg, flags=re.MULTILINE)
@@ -66,11 +91,16 @@ class MediaChannel:
             cfg = re.sub(r'^[#\s]*module\s+cons\.so.*', '', cfg, flags=re.MULTILINE)
             
             cfg += '\n\n# --- DYNAMIC SWARM INJECTIONS ---'
-            cfg += f'\nsip_listen\t0.0.0.0:{self.sip_port}'
+            
+            # Leader gets a static port, Workers get ephemeral ports to prevent routing collision
+            if self.channel_id == 0:
+                cfg += f'\nsip_listen\t0.0.0.0:{self.sip_port}'
+            else:
+                cfg += '\nsip_listen\t0.0.0.0:0'
+                
             cfg += f'\nctrl_tcp_bind\t0.0.0.0:{self.ctrl_port}'  
             cfg += f'\ncons_listen\t0.0.0.0:{self.udp_port}'
             
-            # NEW: Strict RTP media isolation boundaries
             rtp_start = 10000 + (self.channel_id * 20)
             rtp_end = rtp_start + 10
             cfg += f'\nrtp_ports\t{rtp_start}-{rtp_end}'
@@ -85,18 +115,16 @@ class MediaChannel:
             
             with open(os.path.join(temp_config_dir, "config"), "w") as f:
                 f.write(cfg)
-        else:
-            print(f"[Channel {self.channel_id}] CRITICAL WARNING: No base config found at {config_src}")
 
         cmd = ["baresip", "-f", temp_config_dir]
-        
         log_file = open(f"/tmp/baresip_chan_{self.channel_id}.log", "w")
         self.baresip_process = subprocess.Popen(cmd, stdout=log_file, stderr=log_file)
         
-        import time
         time.sleep(1.5) 
         self.ctrl.start()
-        print(f"[Channel {self.channel_id}] Baresip subprocess online (SIP: {self.sip_port}, RTP: {rtp_start}-{rtp_end}).")
+        
+        mode = "Leader" if self.channel_id == 0 else "Headless Worker"
+        print(f"[Channel {self.channel_id}] {mode} online (RTP: {rtp_start}-{rtp_end}).")
 
     def shutdown(self):
         if self.active_call:

@@ -56,6 +56,7 @@ class SIPAgentOrchestrator:
         future.add_done_callback(check_handler_exception)
 
     async def _process_inbound_call(self, channel, call, caller_number) -> None:
+        channel.answer_call()
         session = CallSession(call, channel, self.config, self.db)
         call_id = getattr(call, '_id', None)
         
