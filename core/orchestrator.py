@@ -12,6 +12,9 @@ class SIPAgentOrchestrator:
         self.loop = loop
         self.state_manager = CallStateManager()
         
+        # Track active Caller IDs to prevent multiple AI spawns for a single call
+        self.seen_caller_numbers = set()
+        
         self.pool = ChannelPoolManager(capacity=5, config=self.config, loop=self.loop, inbound_handler=self._handle_ringing_call)
         self.scheduler = BackgroundScheduler(self.config, self.db, self.pool)
 
@@ -29,9 +32,18 @@ class SIPAgentOrchestrator:
             self.loop.stop()
 
     def _handle_ringing_call(self, channel, call) -> None:
-        caller_id = getattr(call, '_id', 'Unknown')
-        print(f"\n[App] Inbound call incoming on Channel {channel.channel_id}. Initializing line track ID: {caller_id}...")
-        future = asyncio.run_coroutine_threadsafe(self._process_inbound_call(channel, call), self.loop)
+        call_id = getattr(call, '_id', 'Unknown')
+        
+        # Baresip generates random UUIDs for call._id. We must deduplicate by Caller Number.
+        caller_number = call.request.headers.get('From', {}).get('number', 'Unknown')
+        
+        if caller_number in self.seen_caller_numbers:
+            return
+            
+        self.seen_caller_numbers.add(caller_number)
+        
+        print(f"\n[App] Inbound call incoming on Channel {channel.channel_id}. Initializing line track ID: {call_id}...")
+        future = asyncio.run_coroutine_threadsafe(self._process_inbound_call(channel, call, caller_number), self.loop)
         
         def check_handler_exception(f):
             try:
@@ -43,7 +55,7 @@ class SIPAgentOrchestrator:
                 
         future.add_done_callback(check_handler_exception)
 
-    async def _process_inbound_call(self, channel, call) -> None:
+    async def _process_inbound_call(self, channel, call, caller_number) -> None:
         session = CallSession(call, channel, self.config, self.db)
         call_id = getattr(call, '_id', None)
         
@@ -58,6 +70,9 @@ class SIPAgentOrchestrator:
             finally:
                 if call_id:
                     await self.state_manager.unregister_session(call_id)
+                # Release the deduplication lock so they can call again later
+                if caller_number in self.seen_caller_numbers:
+                    self.seen_caller_numbers.remove(caller_number)
         else:
             try:
                 call.deny()
@@ -65,4 +80,6 @@ class SIPAgentOrchestrator:
                 pass
             if call_id:
                 await self.state_manager.unregister_session(call_id)
+            if caller_number in self.seen_caller_numbers:
+                self.seen_caller_numbers.remove(caller_number)
             channel.is_busy = False

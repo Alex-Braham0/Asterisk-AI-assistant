@@ -73,7 +73,6 @@ class BaresipController:
             print(f"[BaresipCtrl] Failed to send UDP DTMF: {e}")
 
     def _listener_loop(self):
-        # FIX: Wait for Baresip to finish booting and SIP registration before connecting
         time.sleep(2) 
         while self._is_running:
             try:
@@ -102,5 +101,7 @@ class BaresipController:
                         except json.JSONDecodeError: continue
                 s.close()
             except Exception as e:
-                print(f"\n[BaresipCtrl] Connection Loop Dropped: {e}")
+                # Silence normal port-waiting errors
+                if "Connection refused" not in str(e):
+                    print(f"\n[BaresipCtrl] Socket Error on {self.ctrl_port}: {e}")
                 time.sleep(1)

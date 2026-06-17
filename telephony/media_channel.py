@@ -43,6 +43,7 @@ class MediaChannel:
         for filename in ["accounts", "contacts"]:
             src = os.path.join(base_config_dir, filename)
             if os.path.exists(src):
+                import shutil
                 shutil.copy(src, os.path.join(temp_config_dir, filename))
                 
         config_src = os.path.join(base_config_dir, "config")
@@ -50,23 +51,30 @@ class MediaChannel:
             with open(config_src, "r") as f:
                 cfg = f.read()
                 
-            cfg = re.sub(r'^sip_listen.*', 'sip_listen\t0.0.0.0:0', cfg, flags=re.MULTILINE)
-            cfg = re.sub(r'^ctrl_tcp_listen.*', f'ctrl_tcp_listen\t0.0.0.0:{self.ctrl_port}', cfg, flags=re.MULTILINE)
-            cfg = re.sub(r'^cons_listen.*', f'cons_listen\t0.0.0.0:{self.udp_port}', cfg, flags=re.MULTILINE)
+            import re
+            cfg = re.sub(r'^[#\s]*sip_listen.*', '', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^[#\s]*ctrl_tcp_.*', '', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^[#\s]*cons_listen.*', '', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^[#\s]*audio_player.*', '', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^[#\s]*audio_source.*', '', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^[#\s]*module_app\s+ctrl_tcp\.so.*', '', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^[#\s]*module\s+ctrl_tcp\.so.*', '', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^[#\s]*module_app\s+cons\.so.*', '', cfg, flags=re.MULTILINE)
+            cfg = re.sub(r'^[#\s]*module\s+cons\.so.*', '', cfg, flags=re.MULTILINE)
             
-            # FIX: Explicitly bind the EXACT PulseAudio virtual cable names to Baresip
-            cfg = re.sub(r'^audio_player.*', f'audio_player\tpulse,{self.tx_name}', cfg, flags=re.MULTILINE)
-            cfg = re.sub(r'^audio_source.*', f'audio_source\tpulse,{self.rx_name}', cfg, flags=re.MULTILINE)
+            cfg += '\n\n# --- DYNAMIC SWARM INJECTIONS ---'
+            cfg += '\nsip_listen\t0.0.0.0:0'
+            cfg += f'\nctrl_tcp_bind\t0.0.0.0:{self.ctrl_port}'  
+            cfg += f'\ncons_listen\t0.0.0.0:{self.udp_port}'
             
-            if 'sip_listen' not in cfg: cfg += '\nsip_listen\t0.0.0.0:0'
-            if 'ctrl_tcp_listen' not in cfg: cfg += f'\nctrl_tcp_listen\t0.0.0.0:{self.ctrl_port}'
-            if 'cons_listen' not in cfg: cfg += f'\ncons_listen\t0.0.0.0:{self.udp_port}'
-            if 'audio_player' not in cfg: cfg += f'\naudio_player\tpulse,{self.tx_name}'
-            if 'audio_source' not in cfg: cfg += f'\naudio_source\tpulse,{self.rx_name}'
+            # FIX: Correct the crossed-wires in PulseAudio virtual cables
+            baresip_speaker = f"Baresip_Rx_{self.channel_id}"
+            baresip_mic = f"Baresip_Tx_{self.channel_id}.monitor"
+            cfg += f'\naudio_player\tpulse,{baresip_speaker}'
+            cfg += f'\naudio_source\tpulse,{baresip_mic}'
             
-            # Prevent the "module already loaded" warnings
-            if 'module ctrl_tcp.so' not in cfg: cfg += '\nmodule ctrl_tcp.so'
-            if 'module cons.so' not in cfg: cfg += '\nmodule cons.so'
+            cfg += '\nmodule\tctrl_tcp.so'
+            cfg += '\nmodule\tcons.so'
             
             with open(os.path.join(temp_config_dir, "config"), "w") as f:
                 f.write(cfg)
