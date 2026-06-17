@@ -6,9 +6,9 @@ from ai.context_builder import ContextBuilder
 from tools.registry import ToolRegistry
 
 class CallSession:
-    def __init__(self, call, channel, config, db):
+    def __init__(self, call, engine, config, db):
         self.call = call
-        self.channel = channel
+        self.engine = engine
         self.config = config
         self.db = db
         
@@ -63,9 +63,9 @@ class CallSession:
 
         self.gemini_socket = GeminiSocket(
             api_key=self.config.gemini_api_key,
-            pbx_to_ai_queue=self.channel.pbx_to_ai_queue,
-            pbx_inject_callback=self.channel.inject_audio,
-            pbx_flush_callback=self.channel.flush_tx_buffer,
+            pbx_to_ai_queue=self.engine.pbx_to_ai_queue,
+            pbx_inject_callback=self.engine.inject_audio,
+            pbx_flush_callback=self.engine.flush_tx_buffer,
             tool_handler_callback=self._handle_tool_call,
             system_instruction=dynamic_prompt,
             tools=self.tool_registry.get_declarations()
@@ -88,7 +88,7 @@ class CallSession:
         if self.direction == "inbound":
             # THE FIX: Answer the physical line only after Gemini has successfully connected.
             print("[CallSession] Gemini AI initialized. Answering Asterisk line now.")
-            self.channel.answer_call()
+            self.engine.answer_call()
         else:
             if self.gemini_socket.is_connected:
                 await self.gemini_socket.send_system_event(
@@ -126,7 +126,7 @@ class CallSession:
     async def _monitor_call_state(self):
         try:
             call_id = getattr(self.call, '_id', None)
-            while call_id and self.channel.active_call and call_id == getattr(self.channel.active_call, '_id', None):
+            while call_id and self.engine.active_call and call_id == getattr(self.engine.active_call, '_id', None):
                 await asyncio.sleep(0.1)
         finally:
             self.call_dropped_event.set()
@@ -134,7 +134,7 @@ class CallSession:
     def drop_call(self):
         call_id = getattr(self.call, '_id', None)
         if call_id:
-            self.channel.drop_call()
+            self.engine.drop_call()
 
     async def trigger_summary(self, reason):
         if self.gemini_socket and self.gemini_socket.is_connected:

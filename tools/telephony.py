@@ -61,47 +61,37 @@ class EndCall(BaseTool):
 
 class ExecuteOutboundDial(BaseTool):
     name = "execute_outbound_dial"
-    description = "Dials an external number. Use this to contact humans to fulfill your mission. You will be connected to the audio channel upon answer."
+    description = "Dials an external number. Use this to contact humans to fulfill your mission."
     auth_level = 10
     parameters = {
         "type": "OBJECT",
-        "properties": {
-            "target_extension": {
-                "type": "STRING", 
-                "description": "The exact numeric SIP extension to call."
-            }
-        },
-        "required": ["target_extension"]
+        "properties": {"target_extension": {"type": "STRING"}}
     }
 
     async def execute(self, session, args):
         target = args.get("target_extension")
         
-        channel = await session.orchestrator_pool.lease_idle_channel()
-        if not channel:
-            return {"status": "failed", "message": "All telephony channels are currently in use. Try again later."}
-            
+        # We don't need to lease from a pool anymore. The Scheduler already locked the engine for us.
+        call = session.engine.make_outbound_call(target)
+        if not call:
+             return {"status": "failed", "message": "Failed to dial. Line may be stuck."}
+             
         try:
-            call = channel.make_outbound_call(target)
-            if not call:
-                 return {"status": "failed", "message": "Failed to spawn call."}
-                 
             await asyncio.wait_for(call.answered_event.wait(), timeout=30.0)
             
-            session.gemini_socket.pbx_to_ai_queue = channel.pbx_to_ai_queue
-            session.gemini_socket.pbx_inject_callback = channel.inject_audio
-            session.gemini_socket.pbx_flush_callback = channel.flush_tx_buffer
+            # Hot-swap the background socket's audio onto the live phone call
+            session.gemini_socket.pbx_to_ai_queue = session.engine.pbx_to_ai_queue
+            session.gemini_socket.pbx_inject_callback = session.engine.inject_audio
+            session.gemini_socket.pbx_flush_callback = session.engine.flush_tx_buffer
             
             await session.gemini_socket.send_system_event("Call connected. The human has picked up the phone. Speak immediately.")
-            
             await call.ended_event.wait()
-            return {"status": "success", "message": f"Call with {target} completed."}
+            return {"status": "success"}
         except asyncio.TimeoutError:
-            channel.drop_call()
+            session.engine.drop_call()
             return {"status": "failed", "message": "Call timed out."}
         finally:
-            channel.is_busy = False
-            
+            # Isolate the background agent again
             dummy_queue = asyncio.Queue()
             session.gemini_socket.pbx_to_ai_queue = dummy_queue
             session.gemini_socket.pbx_inject_callback = lambda x: None
