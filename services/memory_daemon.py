@@ -30,26 +30,26 @@ class MemoryDaemon:
             d.mkdir(parents=True, exist_ok=True)
 
     def _print_diff(self, title: str, old_text: str, new_text: str) -> None:
-        """Helper to print color-coded terminal diffs of memory changes."""
-        if old_text.strip() == new_text.strip():
+        """Helper to print a clean, human-readable summary of memory changes."""
+        # Clean up the strings for comparison
+        old_clean = old_text.strip()
+        new_clean = new_text.strip()
+        
+        if old_clean == new_clean:
             return
             
-        print(f"\n--- Memory Changes for {title} ---")
-        diff = difflib.unified_diff(
-            old_text.splitlines(),
-            new_text.splitlines(),
-            fromfile='Before',
-            tofile='After',
-            lineterm=''
-        )
-        for line in diff:
-            if line.startswith('+') and not line.startswith('+++'):
-                print(f"\033[92m{line}\033[0m") # Green for additions
-            elif line.startswith('-') and not line.startswith('---'):
-                print(f"\033[91m{line}\033[0m") # Red for deletions
-            else:
-                print(line)
-        print("----------------------------------\n")
+        print(f"\n" + "="*40)
+        print(f"🧠 MEMORY UPDATED: {title}")
+        print("="*40)
+        
+        if old_clean and old_clean != "No existing memory profile.":
+            print(f"\033[91mPREVIOUS MEMORY:\n{old_clean}\033[0m")
+        else:
+            print("\033[91mPREVIOUS MEMORY:\n[Empty / No Profile]\033[0m")
+            
+        print("-" * 40)
+        print(f"\033[92mNEW MEMORY:\n{new_clean}\033[0m")
+        print("="*40 + "\n")
 
     def get_existing_memory(self, target_dir: Path, filename: str) -> str:
         memory_file = target_dir / f"{filename}.md"
