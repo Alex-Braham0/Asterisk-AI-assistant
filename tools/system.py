@@ -40,9 +40,7 @@ class SubmitCallSummary(BaseTool):
     }
 
     async def execute(self, session, args):
-        # Allow the summary if the system requested it, OR if the call is already naturally dropping
         if not getattr(session.gemini_socket, 'summary_requested', False):
-            # If the engine has an active call, block it. If the call is already dead, let it pass.
             if session.engine.active_call is not None:
                 print("[ToolRegistry] Blocked premature summary attempt.")
                 return {
@@ -66,7 +64,8 @@ class SubmitCallSummary(BaseTool):
         print(f"[ToolRegistry] Summary received. Queuing update for extension {extension}.")
         asyncio.create_task(session.db.tasks.spool_call_summary(extension, args))
         
-        # Failsafe cleanup
+        # FAILSAFE CLEANUP: Force the WebSocket to close so the Orchestrator lock releases
+        session.gemini_socket.is_connected = False
         session.drop_call()
         session.terminate_bridge()
         return None

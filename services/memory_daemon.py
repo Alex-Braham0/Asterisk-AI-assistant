@@ -2,6 +2,7 @@ import os
 import time
 import json
 import shutil
+import difflib
 from pathlib import Path
 from google import genai
 from google.genai import types
@@ -27,6 +28,28 @@ class MemoryDaemon:
     def _ensure_directories(self) -> None:
         for d in [self.pending_dir, self.processed_dir, self.memory_users_dir, self.memory_endpoints_dir]:
             d.mkdir(parents=True, exist_ok=True)
+
+    def _print_diff(self, title: str, old_text: str, new_text: str) -> None:
+        """Helper to print color-coded terminal diffs of memory changes."""
+        if old_text.strip() == new_text.strip():
+            return
+            
+        print(f"\n--- Memory Changes for {title} ---")
+        diff = difflib.unified_diff(
+            old_text.splitlines(),
+            new_text.splitlines(),
+            fromfile='Before',
+            tofile='After',
+            lineterm=''
+        )
+        for line in diff:
+            if line.startswith('+') and not line.startswith('+++'):
+                print(f"\033[92m{line}\033[0m") # Green for additions
+            elif line.startswith('-') and not line.startswith('---'):
+                print(f"\033[91m{line}\033[0m") # Red for deletions
+            else:
+                print(line)
+        print("----------------------------------\n")
 
     def get_existing_memory(self, target_dir: Path, filename: str) -> str:
         memory_file = target_dir / f"{filename}.md"
@@ -103,25 +126,30 @@ CALL TRANSCRIPT:
         
         updated_entities = []
         
+        # Check diffs and write for Endpoint
         endpoint_profile = new_profiles.get("endpoint_profile", "").strip()
-        if endpoint_profile and endpoint_profile != "No existing memory profile.":
+        if endpoint_profile and endpoint_profile != current_endpoint_mem.strip() and endpoint_profile != "No existing memory profile.":
+            self._print_diff(f"Endpoint({endpoint_id})", current_endpoint_mem, endpoint_profile)
             self.write_memory(self.memory_endpoints_dir, endpoint_id, endpoint_profile)
             updated_entities.append(f"Endpoint({endpoint_id})")
 
+        # Check diffs and write for User Profiles
         if user_id:
             pub_profile = new_profiles.get("user_profile_public", "").strip()
             priv_profile = new_profiles.get("user_profile_private", "").strip()
             
-            if pub_profile and pub_profile != "No existing memory profile.":
+            if pub_profile and pub_profile != pub_user_mem.strip() and pub_profile != "No existing memory profile.":
+                self._print_diff(f"UserPublic({user_id})", pub_user_mem, pub_profile)
                 self.write_memory(self.memory_users_dir, f"{user_id}_public", pub_profile)
                 updated_entities.append(f"UserPublic({user_id})")
                 
-            if priv_profile and priv_profile != "No existing memory profile.":
+            if priv_profile and priv_profile != priv_user_mem.strip() and priv_profile != "No existing memory profile.":
+                self._print_diff(f"UserPrivate({user_id})", priv_user_mem, priv_profile)
                 self.write_memory(self.memory_users_dir, f"{user_id}_private", priv_profile)
                 updated_entities.append(f"UserPrivate({user_id})")
 
         if not updated_entities:
-            return "SKIPPED", "LLM generated no viable memory outputs."
+            return "SKIPPED", "LLM generated no viable memory changes."
 
         return "UPDATED", f"Updated: {', '.join(updated_entities)}."
 
