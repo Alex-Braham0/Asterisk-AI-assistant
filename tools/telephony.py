@@ -46,7 +46,7 @@ class SendDTMF(BaseTool):
 
 class EndCall(BaseTool):
     name = "end_call"
-    description = "Hangs up the phone."
+    description = "Hangs up the phone. After using this, STOP speaking and wait silently. The system will automatically send a SYSTEM COMMAND prompting you to use the 'submit_call_summary' tool. Do NOT submit the summary yourself until commanded."
     auth_level = 0
     parameters = {
         "type": "object",
@@ -57,7 +57,7 @@ class EndCall(BaseTool):
 
     async def execute(self, session, args):
         session.drop_call()
-        return {"status": "success", "message": "Call dropped."}
+        return {"status": "success", "internal_directive": "Call dropped successfully. Now wait silently for the system command to submit the summary."}
 
 class ExecuteOutboundDial(BaseTool):
     name = "execute_outbound_dial"

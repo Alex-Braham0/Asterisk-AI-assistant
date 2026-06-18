@@ -9,14 +9,24 @@ class ToolRegistry:
     def __init__(self, session):
         self.session = session
         
+        # Base tools available to ALL sessions
         registered_classes = [
-            SubmitCallSummary, SetActiveUser, UpdateUserTimezone, MarkMissionComplete,
-            TransferCall, SendDTMF, EndCall, ExecuteOutboundDial,
+            SubmitCallSummary, SetActiveUser, UpdateUserTimezone, 
+            TransferCall, SendDTMF, ExecuteOutboundDial,
             SearchDirectory, SearchUsers,
             RegisterNewUser, UpdateEndpointContext, ResolveAndSwitchUser,
-            DelegateAutonomousTask,
             CheckWeather
         ]
+        
+        # Determine Session Type to prevent Tool Leakage
+        session_type = type(self.session).__name__
+        
+        if session_type == "HeadlessAgentSession":
+            # Swarm tools ONLY
+            registered_classes.extend([MarkMissionComplete])
+        elif session_type == "CallSession":
+            # Live human caller tools ONLY
+            registered_classes.extend([EndCall, DelegateAutonomousTask])
         
         self.tools = {cls.name: cls() for cls in registered_classes}
 

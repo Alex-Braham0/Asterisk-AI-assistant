@@ -40,12 +40,15 @@ class SubmitCallSummary(BaseTool):
     }
 
     async def execute(self, session, args):
+        # Allow the summary if the system requested it, OR if the call is already naturally dropping
         if not getattr(session.gemini_socket, 'summary_requested', False):
-            print("[ToolRegistry] Blocked premature summary attempt.")
-            return {
-                "status": "failed", 
-                "message": "CRITICAL ERROR: The call is still active! Do NOT use submit_call_summary. Use end_call instead."
-            }
+            # If the engine has an active call, block it. If the call is already dead, let it pass.
+            if session.engine.active_call is not None:
+                print("[ToolRegistry] Blocked premature summary attempt.")
+                return {
+                    "status": "failed", 
+                    "internal_directive": "CRITICAL ERROR: The user is still on the phone! Do not summarize yet. If the conversation is over, use 'end_call' first."
+                }
 
         extension = getattr(session, 'target_extension', 'Unknown')
         args["user_id"] = getattr(session, 'active_user_id', None)
@@ -63,6 +66,7 @@ class SubmitCallSummary(BaseTool):
         print(f"[ToolRegistry] Summary received. Queuing update for extension {extension}.")
         asyncio.create_task(session.db.tasks.spool_call_summary(extension, args))
         
+        # Failsafe cleanup
         session.drop_call()
         session.terminate_bridge()
         return None
