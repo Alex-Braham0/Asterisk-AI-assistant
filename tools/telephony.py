@@ -57,6 +57,8 @@ class EndCall(BaseTool):
 
     async def execute(self, session, args):
         session.drop_call()
+        # FORCE unblock the bridge to guarantee the summary system command fires immediately
+        session.call_dropped_event.set() 
         return {"status": "success", "internal_directive": "Call dropped successfully. Now wait silently for the system command to submit the summary."}
 
 class ExecuteOutboundDial(BaseTool):

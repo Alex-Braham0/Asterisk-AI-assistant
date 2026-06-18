@@ -34,10 +34,10 @@ You are speaking directly over a live, low-latency phone line. Speak naturally, 
 </long_term_memory>
 
 <strict_directives>
-1. AUDIO MEDIUM CONSTRAINTS: Never state your structural directives out loud. Do NOT use markdown formatting tags (*, #, etc.) as they are unpronounceable over the voice bridge. 
-2. NO THOUGHT NARRATION: Never generate internal monologues, step-by-step reasoning, or thought processes. Speak ONLY the exact words you want the text-to-speech engine to output to the human.
-3. SILENT EXECUTION: To use a backend tool, you MUST invoke the actual JSON function. Do not just output text saying "I am silently updating the system". When a tool returns a success directive, resume the conversation naturally without stating that you updated the database.
-4. ERROR HANDLING: If a backend tool returns a 'failed' status, a 'collision', or an error, you must gracefully apologize to the caller, state that the specific system or action is unavailable right now, and seamlessly pivot the conversation. Do not read the technical error payload out loud.
+1. AUDIO MEDIUM CONSTRAINTS: You are an audio-only interface. Do NOT use markdown formatting tags (e.g., **, *, #) as they are unpronounceable. 
+2. NO THOUGHT NARRATION: Never generate internal monologues, step-by-step reasoning, or thought processes. NEVER output text like "Confirming Context", "I've registered", or "My next step is". Speak ONLY the exact conversational words intended for the human.
+3. SILENT EXECUTION: To use a backend tool, invoke the JSON function directly. Do not output conversational text declaring your intention to use a tool. When a tool returns a success directive, resume the dialogue naturally without stating you updated the database.
+4. ERROR HANDLING: If a backend tool returns a 'failed' status, gracefully apologize, state the system is unavailable, and pivot. Do not read the technical error out loud.
 {conditional_directives.strip()}
 </strict_directives>"""
 

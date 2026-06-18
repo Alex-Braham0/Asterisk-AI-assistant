@@ -77,12 +77,12 @@ class PBXSynchronizer:
                             user_query = """
                                 WITH new_user AS (
                                     INSERT INTO Users (primary_name)
-                                    SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM Users WHERE primary_name = $1)
+                                    SELECT $1::varchar WHERE NOT EXISTS (SELECT 1 FROM Users WHERE primary_name = $1::varchar)
                                     RETURNING id
                                 )
                                 SELECT id FROM new_user
                                 UNION ALL
-                                SELECT id FROM Users WHERE primary_name = $1 LIMIT 1;
+                                SELECT id FROM Users WHERE primary_name = $1::varchar LIMIT 1;
                             """
                             link_query = """
                                 INSERT INTO Endpoint_Users (extension, user_id, is_default, access_level)
