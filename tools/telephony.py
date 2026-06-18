@@ -56,6 +56,7 @@ class EndCall(BaseTool):
     }
 
     async def execute(self, session, args):
+        await asyncio.sleep(1.2)
         session.drop_call()
         # FORCE unblock the bridge to guarantee the summary system command fires immediately
         session.call_dropped_event.set() 
