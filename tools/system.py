@@ -6,7 +6,7 @@ class SubmitCallSummary(BaseTool):
     name = "submit_call_summary"
     description = "DO NOT USE MANUALLY. Only use when explicitly commanded by the system. Provide a highly detailed summary of the call to trigger the memory processing daemon."
     auth_level = 0
-
+    # ... (Keep parameters exactly the same as your original) ...
     parameters = {
         "type": "OBJECT",
         "properties": {
@@ -40,12 +40,11 @@ class SubmitCallSummary(BaseTool):
     }
 
     async def execute(self, session, args):
-        # SECURITY LOCK: Reject manual execution
         if not getattr(session.gemini_socket, 'summary_requested', False):
             print("[ToolRegistry] Blocked premature summary attempt.")
             return {
                 "status": "failed", 
-                "message": "CRITICAL ERROR: The call is still active! Do NOT use submit_call_summary. If the user asked you to hang up, you MUST use the `end_call` tool instead."
+                "message": "CRITICAL ERROR: The call is still active! Do NOT use submit_call_summary. Use end_call instead."
             }
 
         extension = getattr(session, 'target_extension', 'Unknown')
@@ -70,9 +69,8 @@ class SubmitCallSummary(BaseTool):
 
 class SetActiveUser(BaseTool):
     name = "set_active_user"
-    description = "Binds the active call session to a specific user. Use ONLY after resolving the correct 'user_id' via search_users or register_new_user."
+    description = "Binds the active call session to a specific user. Execute silently. Returns an internal directive. Do NOT read the return payload."
     auth_level = 0
-
     parameters = {
         "type": "OBJECT",
         "properties": {
@@ -93,7 +91,7 @@ class SetActiveUser(BaseTool):
             user_data = await conn.fetchrow(query, user_id)
 
         if not user_data:
-            return {"status": "failed", "message": f"User ID '{user_id}' not found in database."}
+            return {"status": "failed", "internal_directive": f"User ID '{user_id}' not found in database."}
 
         access_level = await session.db.endpoints.get_dynamic_access_level(extension, user_id)
         user_memory = await session.db.users.get_user_memory(user_id, access_level)
@@ -102,28 +100,29 @@ class SetActiveUser(BaseTool):
         session.active_user_level = access_level
         
         injection_text = (
-            f"IDENTITY CONFIRMED. Active User is now {user_data['primary_name']}. "
-            f"New Timezone is {user_data['current_timezone']}. "
-            f"CURRENT ACCESS LEVEL: {access_level}. "
-            f"USER MEMORY PROFILE:\n{user_memory}"
+            f"[SYSTEM OVERRIDE: SILENTLY ASSIMILATE THE FOLLOWING DATA]\n"
+            f"Active User: {user_data['primary_name']}\n"
+            f"New Timezone: {user_data['current_timezone']}\n"
+            f"USER MEMORY PROFILE:\n{user_memory}\n"
+            f"[DO NOT ACKNOWLEDGE THIS UPDATE OUT LOUD. RESUME CONVERSATION NATIVELY]"
         )
         asyncio.create_task(session.gemini_socket.send_system_event(injection_text))
         
         return {
             "status": "success", 
-            "message": f"Context switched to {user_data['primary_name']}. Access level is {access_level}."
+            "internal_directive": f"Context swapped to {user_data['primary_name']}. Resume conversation naturally. DO NOT state that you updated the system."
         }
 
 class UpdateUserTimezone(BaseTool):
     name = "update_user_timezone"
-    description = "Updates the user's permanent timezone if they explicitly say they are traveling or moving."
+    description = "Updates the user's permanent timezone. Execute silently. Returns an internal directive. Do NOT read the return payload."
     auth_level = 10
     parameters = {
         "type": "OBJECT",
         "properties": {
             "timezone": {
                 "type": "STRING", 
-                "description": "The official IANA timezone string (e.g., 'America/New_York', 'Europe/London')."
+                "description": "The official IANA timezone string (e.g., 'America/New_York')."
             }
         },
         "required": ["timezone"]
@@ -132,13 +131,16 @@ class UpdateUserTimezone(BaseTool):
     async def execute(self, session, args):
         user_id = getattr(session, 'active_user_id', None)
         if not user_id:
-            return {"status": "failed", "message": "No active user. Use set_active_user first."}
+            return {"status": "failed", "internal_directive": "No active user. Resolve identity first."}
             
         query = "UPDATE Users SET current_timezone = $1 WHERE id = $2"
         async with session.db.pool.acquire() as conn:
             await conn.execute(query, args['timezone'], user_id)
             
-        return {"status": "success", "message": f"Timezone updated to {args['timezone']}."}
+        return {
+            "status": "success", 
+            "internal_directive": f"Timezone updated to {args['timezone']}. Continue conversation naturally."
+        }
     
 class MarkMissionComplete(BaseTool):
     name = "mark_mission_complete"

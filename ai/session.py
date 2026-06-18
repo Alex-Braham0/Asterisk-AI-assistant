@@ -43,14 +43,18 @@ class CallSession:
         memory_content = "No specific memory file exists yet."
 
         if endpoint_data:
-            default_user_name = endpoint_data.get('default_user_name')
-            if default_user_name:
-                self.active_user_level = endpoint_data.get('access_level', 10)
-                memory_content = await self.db.users.get_user_memory(default_user_name, self.active_user_level)
+            default_user_id = endpoint_data.get('default_user_id')
+            
+            if default_user_id:
+                self.active_user_id = default_user_id
+                self.active_user_level = endpoint_data.get('default_access_level', 'PRIVATE')
+                # FIX: Pass the exact user_id, not the name
+                memory_content = await self.db.users.get_user_memory(default_user_id, self.active_user_level)
             else:
                 self.active_user_level = 0 
                 memory_content = await self.db.endpoints.get_extension_memory(caller_number)
         else:
+            self.active_user_level = 0
             memory_content = await self.db.endpoints.get_extension_memory(caller_number)
 
         dynamic_prompt = ContextBuilder.build_initial_prompt(

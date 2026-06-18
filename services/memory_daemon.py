@@ -36,21 +36,30 @@ class MemoryDaemon:
         return "No existing memory profile."
 
     def write_memory(self, target_dir: Path, filename: str, content: str) -> None:
-        memory_file = target_dir / f"{filename}.md"
-        with open(memory_file, "w", encoding="utf-8") as f:
+        """
+        ATOMIC WRITE: Uses a temporary file and an OS-level replacement
+        to prevent race conditions with the telephony engine.
+        """
+        target_file = target_dir / f"{filename}.md"
+        tmp_file = target_dir / f"{filename}.tmp"
+        
+        with open(tmp_file, "w", encoding="utf-8") as f:
             f.write(content.strip())
+            
+        os.replace(tmp_file, target_file)
 
     def generate_new_profiles(self, pub_user_mem: str, priv_user_mem: str, endpoint_mem: str, transcript: str) -> dict:
         prompt = f"""
 You are the intelligence layer managing long-term memory for an AI phone agent. 
-Your objective is to parse the transcript and update the user and endpoint memory profiles securely.
+Your objective is to update the user and endpoint memory profiles securely based on the new call transcript.
 
 CRITICAL DIRECTIVES:
-1. DATA SCOPING: You MUST split the user's data. 
+1. ANTI-AMNESIA (PRESERVE EXISTING DATA): You MUST copy and retain all existing facts, preferences, and context from the CURRENT PROFILES. Do not summarize or delete old information simply because it was not discussed in the current call.
+2. COMPARE AND APPEND: Compare the call transcript against the current profiles. If new, valid facts emerge, append them logically. If a preference explicitly changes in the transcript, overwrite that specific line.
+3. DATA SCOPING: Split the user's data appropriately:
     - PUBLIC: Trivial facts, generic preferences, names, relationships, general tone preferences.
     - PRIVATE: Calendar events, specific routines, medical/financial context, sensitive notes, passwords.
-2. ENDPOINT ISOLATION: Physical traits (e.g. "This phone is in the kitchen") go strictly into the endpoint profile.
-3. PRUNING: Discard ephemeral conversational filler. Overwrite obsolete information. Keep word counts dense and highly compressed.
+4. ENDPOINT ISOLATION: Physical traits (e.g. "This phone is in the kitchen") go strictly into the endpoint profile.
 
 CURRENT PUBLIC USER PROFILE:
 {pub_user_mem}
@@ -131,7 +140,6 @@ CALL TRANSCRIPT:
         except Exception as e:
             err_str = str(e).upper()
             
-            # Critique 5 Fix: Exponential backoff resilience. DO NOT RENAME to .error on API limits.
             if any(err in err_str for err in ["503", "UNAVAILABLE", "429", "QUOTA"]):
                 print(f"[Memory Daemon] TRANSIENT API ERROR (Rate Limit/Overload) processing {file_path.name}. Backing off. File remains queued.")
                 time.sleep(10)
@@ -148,9 +156,7 @@ CALL TRANSCRIPT:
             time.sleep(poll_interval)
 
 if __name__ == "__main__":
-    import json
     import sys
-    from pathlib import Path
 
     # Enforce absolute pathing based on the script location to prevent CWD execution issues
     project_root = Path(__file__).resolve().parent.parent

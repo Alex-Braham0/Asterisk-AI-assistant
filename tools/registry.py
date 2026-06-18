@@ -3,7 +3,7 @@ from tools.telephony import TransferCall, SendDTMF, EndCall, ExecuteOutboundDial
 from tools.directory import SearchDirectory, SearchUsers
 from tools.scheduling import DelegateAutonomousTask
 from tools.external import CheckWeather
-from tools.identity import RegisterNewUser, UpdateEndpointContext
+from tools.identity import RegisterNewUser, UpdateEndpointContext, ResolveAndSwitchUser
 
 class ToolRegistry:
     def __init__(self, session):
@@ -13,7 +13,7 @@ class ToolRegistry:
             SubmitCallSummary, SetActiveUser, UpdateUserTimezone, MarkMissionComplete,
             TransferCall, SendDTMF, EndCall, ExecuteOutboundDial,
             SearchDirectory, SearchUsers,
-            RegisterNewUser, UpdateEndpointContext,
+            RegisterNewUser, UpdateEndpointContext, ResolveAndSwitchUser,
             DelegateAutonomousTask,
             CheckWeather
         ]
