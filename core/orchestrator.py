@@ -20,6 +20,11 @@ class SIPAgentOrchestrator:
 
     def start(self) -> None:
         print("\n--- Smart Singleton Swarm Online ---")
+
+        recovery_count = self.loop.run_until_complete(self.db.missions.recover_orphaned_missions())
+        if recovery_count > 0:
+            print(f"[System] Recovered {recovery_count} orphaned background missions from a previous crash.")
+
         self.engine.start()
         self.loop.create_task(self.scheduler.run())
         

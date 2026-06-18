@@ -33,3 +33,15 @@ class MissionRepository:
         query = "UPDATE Autonomous_Missions SET status = $1 WHERE id = $2"
         async with self.pool.acquire() as conn:
             await conn.execute(query, status, mission_id)
+
+    async def recover_orphaned_missions(self) -> int:
+        """Resets any missions that were stuck in 'processing' during a system crash."""
+        query = """
+            UPDATE Autonomous_Missions 
+            SET status = 'pending' 
+            WHERE status = 'processing'
+        """
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(query)
+            # asyncpg returns strings like "UPDATE 2"
+            return int(result.split()[-1]) if result.startswith("UPDATE") else 0
