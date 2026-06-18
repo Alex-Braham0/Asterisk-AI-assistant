@@ -67,18 +67,19 @@ class MemoryDaemon:
             
         os.replace(tmp_file, target_file)
 
-    def generate_new_profiles(self, pub_user_mem: str, priv_user_mem: str, endpoint_mem: str, transcript: str) -> dict:
+    def generate_new_profiles(self, pub_user_mem: str, priv_user_mem: str, endpoint_mem: str, call_data: str) -> dict:
         prompt = f"""
 You are the intelligence layer managing long-term memory for an AI phone agent. 
-Your objective is to update the user and endpoint memory profiles securely based on the new call transcript.
+Your objective is to update the user and endpoint memory profiles securely based on the new call data.
 
 CRITICAL DIRECTIVES:
-1. ANTI-AMNESIA (PRESERVE EXISTING DATA): You MUST copy and retain all existing facts, preferences, and context from the CURRENT PROFILES. Do not summarize or delete old information simply because it was not discussed in the current call.
-2. COMPARE AND APPEND: Compare the call transcript against the current profiles. If new, valid facts emerge, append them logically. If a preference explicitly changes in the transcript, overwrite that specific line.
-3. DATA SCOPING: Split the user's data appropriately:
+1. PRIORITIZE EXPLICIT REQUESTS: The call data includes an array called "explicit_agent_requests". If the live agent requested a specific fact be added or removed, you MUST execute that change.
+2. ANTI-AMNESIA: You MUST copy and retain all existing facts from the CURRENT PROFILES unless explicitly told to remove them. Do not summarize or delete old information simply because it wasn't discussed.
+3. EFFICIENT DELETION: If instructed to remove a fact (or if a fact is declared false/a joke), DELETE the line entirely to save space. Do NOT write negated sentences (e.g., "User is not allergic").
+4. DATA SCOPING: Split the user's data appropriately:
     - PUBLIC: Trivial facts, generic preferences, names, relationships, general tone preferences.
-    - PRIVATE: Calendar events, specific routines, medical/financial context, sensitive notes, passwords.
-4. ENDPOINT ISOLATION: Physical traits (e.g. "This phone is in the kitchen") go strictly into the endpoint profile.
+    - PRIVATE: Calendar events, medical/financial context, sensitive notes.
+5. ENDPOINT ISOLATION: Physical traits go strictly into the endpoint profile.
 
 CURRENT PUBLIC USER PROFILE:
 {pub_user_mem}
@@ -89,8 +90,8 @@ CURRENT PRIVATE USER PROFILE:
 CURRENT ENDPOINT PROFILE:
 {endpoint_mem}
 
-CALL TRANSCRIPT:
-{transcript}
+CALL DATA (Transcript & Live Agent Requests):
+{call_data}
 """
         response = self.client.models.generate_content(
             model='gemini-2.5-flash',
@@ -102,6 +103,59 @@ CALL TRANSCRIPT:
             ),
         )
         return json.loads(response.text)
+
+    def process_summary_dict(self, summary_data: dict) -> tuple[str, str]:
+        endpoint_id = summary_data.get("extension")
+        user_id = summary_data.get("user_id") 
+        
+        if not endpoint_id:
+            raise ValueError("No extension/endpoint ID found in summary JSON.")
+
+        # Grab BOTH the transcript and the AI's explicit requests
+        key_exchanges = summary_data.get("key_exchanges", [])
+        proposed_updates = summary_data.get("proposed_memory_updates", [])
+        
+        if not key_exchanges and not proposed_updates:
+            return "SKIPPED", "No transcript data or proposals available to parse."
+
+        # Package them together for the prompt
+        call_data_payload = json.dumps({
+            "explicit_agent_requests": proposed_updates,
+            "transcript": key_exchanges
+        }, indent=2)
+
+        current_endpoint_mem = self.get_existing_memory(self.memory_endpoints_dir, endpoint_id)
+        pub_user_mem = self.get_existing_memory(self.memory_users_dir, f"{user_id}_public") if user_id else "No existing memory profile."
+        priv_user_mem = self.get_existing_memory(self.memory_users_dir, f"{user_id}_private") if user_id else "No existing memory profile."
+
+        new_profiles = self.generate_new_profiles(pub_user_mem, priv_user_mem, current_endpoint_mem, call_data_payload)
+        
+        updated_entities = []
+        
+        endpoint_profile = new_profiles.get("endpoint_profile", "").strip()
+        if endpoint_profile and endpoint_profile != current_endpoint_mem.strip() and endpoint_profile != "No existing memory profile.":
+            self._print_diff(f"Endpoint({endpoint_id})", current_endpoint_mem, endpoint_profile)
+            self.write_memory(self.memory_endpoints_dir, endpoint_id, endpoint_profile)
+            updated_entities.append(f"Endpoint({endpoint_id})")
+
+        if user_id:
+            pub_profile = new_profiles.get("user_profile_public", "").strip()
+            priv_profile = new_profiles.get("user_profile_private", "").strip()
+            
+            if pub_profile and pub_profile != pub_user_mem.strip() and pub_profile != "No existing memory profile.":
+                self._print_diff(f"UserPublic({user_id})", pub_user_mem, pub_profile)
+                self.write_memory(self.memory_users_dir, f"{user_id}_public", pub_profile)
+                updated_entities.append(f"UserPublic({user_id})")
+                
+            if priv_profile and priv_profile != priv_user_mem.strip() and priv_profile != "No existing memory profile.":
+                self._print_diff(f"UserPrivate({user_id})", priv_user_mem, priv_profile)
+                self.write_memory(self.memory_users_dir, f"{user_id}_private", priv_profile)
+                updated_entities.append(f"UserPrivate({user_id})")
+
+        if not updated_entities:
+            return "SKIPPED", "LLM generated no viable memory changes."
+
+        return "UPDATED", f"Updated: {', '.join(updated_entities)}."
 
     def process_summary_dict(self, summary_data: dict) -> tuple[str, str]:
         endpoint_id = summary_data.get("extension")

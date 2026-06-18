@@ -141,6 +141,13 @@ class CallSession:
             self.engine.drop_call()
 
     async def trigger_summary(self, reason):
+        call_duration = time.time() - self.bridge_start_time
+        if call_duration < 3.0:
+            print("[CallSession] Call ended instantly. Aborting summary generation.")
+            self.gemini_socket.is_connected = False
+        else:
+            self.gemini_socket.summary_requested = True
+            await self.gemini_socket.send_system_event("Requesting final summary. Reason: The user has hung up the phone.")
         if self.gemini_socket and self.gemini_socket.is_connected:
             await self.gemini_socket.request_summary_and_close(reason)
 
