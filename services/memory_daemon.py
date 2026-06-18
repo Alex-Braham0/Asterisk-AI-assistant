@@ -156,6 +156,22 @@ CALL DATA (Transcript & Live Agent Requests):
             return "SKIPPED", "LLM generated no viable memory changes."
 
         return "UPDATED", f"Updated: {', '.join(updated_entities)}."
+    
+    def _is_valid_update(self, old_mem: str, new_mem: str) -> bool:
+        """Determines if the LLM's new memory string warrants a file overwrite."""
+        empty_states = ["", "none", "no existing memory profile.", "no private information.", "no public information.", "[]"]
+        old_c = old_mem.strip()
+        new_c = new_mem.strip()
+
+        # If it is exactly the same, skip
+        if old_c == new_c:
+            return False
+
+        # If it changed from one version of "empty" to another version of "empty", skip
+        if old_c.lower() in empty_states and new_c.lower() in empty_states:
+            return False
+
+        return True
 
     def process_summary_dict(self, summary_data: dict) -> tuple[str, str]:
         endpoint_id = summary_data.get("extension")
@@ -164,34 +180,47 @@ CALL DATA (Transcript & Live Agent Requests):
         if not endpoint_id:
             raise ValueError("No extension/endpoint ID found in summary JSON.")
 
-        transcript = json.dumps(summary_data.get("key_exchanges", []))
-        if not transcript or transcript == "[]":
-            return "SKIPPED", "No transcript data available to parse."
+        key_exchanges = summary_data.get("key_exchanges", [])
+        proposed_updates = summary_data.get("proposed_memory_updates", [])
+        
+        if not key_exchanges and not proposed_updates:
+            return "SKIPPED", "No transcript data or proposals available to parse."
+
+        call_data_payload = json.dumps({
+            "explicit_agent_requests": proposed_updates,
+            "transcript": key_exchanges
+        }, indent=2)
 
         current_endpoint_mem = self.get_existing_memory(self.memory_endpoints_dir, endpoint_id)
         pub_user_mem = self.get_existing_memory(self.memory_users_dir, f"{user_id}_public") if user_id else "No existing memory profile."
         priv_user_mem = self.get_existing_memory(self.memory_users_dir, f"{user_id}_private") if user_id else "No existing memory profile."
 
-        new_profiles = self.generate_new_profiles(pub_user_mem, priv_user_mem, current_endpoint_mem, transcript)
+        new_profiles = self.generate_new_profiles(pub_user_mem, priv_user_mem, current_endpoint_mem, call_data_payload)
         
         updated_entities = []
         
+        # 1. Process Endpoint Profile
         endpoint_profile = new_profiles.get("endpoint_profile", "").strip()
-        if endpoint_profile and endpoint_profile != current_endpoint_mem.strip() and endpoint_profile != "No existing memory profile.":
+        if self._is_valid_update(current_endpoint_mem, endpoint_profile):
+            # Normalize empty states so the file looks clean
+            if endpoint_profile.lower() in ["", "none", "[]"]: endpoint_profile = "No existing memory profile."
             self._print_diff(f"Endpoint({endpoint_id})", current_endpoint_mem, endpoint_profile)
             self.write_memory(self.memory_endpoints_dir, endpoint_id, endpoint_profile)
             updated_entities.append(f"Endpoint({endpoint_id})")
 
+        # 2. Process User Profiles
         if user_id:
             pub_profile = new_profiles.get("user_profile_public", "").strip()
             priv_profile = new_profiles.get("user_profile_private", "").strip()
             
-            if pub_profile and pub_profile != pub_user_mem.strip() and pub_profile != "No existing memory profile.":
+            if self._is_valid_update(pub_user_mem, pub_profile):
+                if pub_profile.lower() in ["", "none", "[]"]: pub_profile = "No existing memory profile."
                 self._print_diff(f"UserPublic({user_id})", pub_user_mem, pub_profile)
                 self.write_memory(self.memory_users_dir, f"{user_id}_public", pub_profile)
                 updated_entities.append(f"UserPublic({user_id})")
                 
-            if priv_profile and priv_profile != priv_user_mem.strip() and priv_profile != "No existing memory profile.":
+            if self._is_valid_update(priv_user_mem, priv_profile):
+                if priv_profile.lower() in ["", "none", "[]"]: priv_profile = "No existing memory profile."
                 self._print_diff(f"UserPrivate({user_id})", priv_user_mem, priv_profile)
                 self.write_memory(self.memory_users_dir, f"{user_id}_private", priv_profile)
                 updated_entities.append(f"UserPrivate({user_id})")
