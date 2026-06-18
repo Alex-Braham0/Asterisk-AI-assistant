@@ -2,7 +2,6 @@ import os
 import time
 import json
 import shutil
-import difflib
 from pathlib import Path
 from google import genai
 from google.genai import types
@@ -20,18 +19,18 @@ class MemoryDaemon:
         
         self.pending_dir = self.base_dir / "call_summaries/pending"
         self.processed_dir = self.base_dir / "call_summaries/processed"
+        self.error_dir = self.base_dir / "call_summaries/errors"
         self.memory_users_dir = self.base_dir / "memory_files/users"
         self.memory_endpoints_dir = self.base_dir / "memory_files/endpoints"
         
         self._ensure_directories()
 
     def _ensure_directories(self) -> None:
-        for d in [self.pending_dir, self.processed_dir, self.memory_users_dir, self.memory_endpoints_dir]:
+        for d in [self.pending_dir, self.processed_dir, self.error_dir, self.memory_users_dir, self.memory_endpoints_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
     def _print_diff(self, title: str, old_text: str, new_text: str) -> None:
         """Helper to print a clean, human-readable summary of memory changes."""
-        # Clean up the strings for comparison
         old_clean = old_text.strip()
         new_clean = new_text.strip()
         
@@ -59,10 +58,7 @@ class MemoryDaemon:
         return "No existing memory profile."
 
     def write_memory(self, target_dir: Path, filename: str, content: str) -> None:
-        """
-        ATOMIC WRITE: Uses a temporary file and an OS-level replacement
-        to prevent race conditions with the telephony engine.
-        """
+        """ATOMIC WRITE to prevent race conditions with the telephony engine."""
         target_file = target_dir / f"{filename}.md"
         tmp_file = target_dir / f"{filename}.tmp"
         
@@ -126,14 +122,12 @@ CALL TRANSCRIPT:
         
         updated_entities = []
         
-        # Check diffs and write for Endpoint
         endpoint_profile = new_profiles.get("endpoint_profile", "").strip()
         if endpoint_profile and endpoint_profile != current_endpoint_mem.strip() and endpoint_profile != "No existing memory profile.":
             self._print_diff(f"Endpoint({endpoint_id})", current_endpoint_mem, endpoint_profile)
             self.write_memory(self.memory_endpoints_dir, endpoint_id, endpoint_profile)
             updated_entities.append(f"Endpoint({endpoint_id})")
 
-        # Check diffs and write for User Profiles
         if user_id:
             pub_profile = new_profiles.get("user_profile_public", "").strip()
             priv_profile = new_profiles.get("user_profile_private", "").strip()
@@ -155,6 +149,16 @@ CALL TRANSCRIPT:
 
     def process_memory_file(self, file_path: Path) -> None:
         print(f"\n[Memory Daemon] Processing: {file_path.name}")
+        
+        # Extract retry count if it exists
+        retry_count = 0
+        if ".retry" in file_path.name:
+            try:
+                # e.g., 6_123.retry2.json -> splits into '2.json'
+                retry_count = int(file_path.name.split(".retry")[1].replace(".json", ""))
+            except ValueError:
+                retry_count = 0
+
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 summary_data = json.load(f)
@@ -163,18 +167,36 @@ CALL TRANSCRIPT:
             
             if status == "SKIPPED" or status == "UPDATED":
                 print(f"[Memory Daemon] {status}: {msg}")
-                shutil.move(str(file_path), str(self.processed_dir / file_path.name))
+                # Clean up filename before moving to processed
+                base_name = file_path.name.split(".retry")[0].replace(".json", "")
+                shutil.move(str(file_path), str(self.processed_dir / f"{base_name}.json"))
                 
         except Exception as e:
             err_str = str(e).upper()
             
+            # Catch Gemini Rate Limits / Quota Errors
             if any(err in err_str for err in ["503", "UNAVAILABLE", "429", "QUOTA"]):
-                print(f"[Memory Daemon] TRANSIENT API ERROR (Rate Limit/Overload) processing {file_path.name}. Backing off. File remains queued.")
-                time.sleep(10)
-                return
+                new_retry_count = retry_count + 1
                 
-            print(f"[Memory Daemon] CRITICAL ERROR processing {file_path.name}: {e}")
-            os.rename(file_path, self.pending_dir / f"{file_path.name}.error")
+                # Infinite Exponential Backoff (15s, 30s, 60s, 120s... capped at 5 minutes)
+                backoff_time = min(15 * (2 ** (new_retry_count - 1)), 300) 
+                
+                print(f"[Memory Daemon] API RATE LIMIT on {file_path.name}. Retry {new_retry_count}. Sleeping daemon for {backoff_time}s.")
+                
+                # Rename file to track retry attempts
+                base_name = file_path.name.split(".retry")[0].replace(".json", "")
+                new_name = f"{base_name}.retry{new_retry_count}.json"
+                new_path = file_path.parent / new_name
+                os.rename(str(file_path), str(new_path))
+                
+                # Sleep the daemon to let the API cool down
+                time.sleep(backoff_time)
+            
+            # Catch standard code/JSON parsing errors (Move to Error Folder)
+            else:
+                print(f"[Memory Daemon] CRITICAL ERROR processing {file_path.name}: {e}")
+                base_name = file_path.name.split(".retry")[0].replace(".json", "")
+                shutil.move(str(file_path), str(self.error_dir / f"{base_name}.error"))
 
     def run(self, poll_interval: int = 5) -> None:
         print("[Memory Daemon] Daemon initialized. Booting directory scanner...")
@@ -186,7 +208,6 @@ CALL TRANSCRIPT:
 if __name__ == "__main__":
     import sys
 
-    # Enforce absolute pathing based on the script location to prevent CWD execution issues
     project_root = Path(__file__).resolve().parent.parent
     config_path = project_root / "config.json"
 
@@ -202,6 +223,5 @@ if __name__ == "__main__":
         print("[Memory Daemon] FATAL: gemini_api_key missing from config.")
         sys.exit(1)
 
-    # Initialize pointing explicitly to the root directory
     daemon = MemoryDaemon(api_key=api_key, base_dir=str(project_root))
     daemon.run()
