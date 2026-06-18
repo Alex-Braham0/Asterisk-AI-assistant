@@ -95,8 +95,13 @@ class MediaEngine:
                 self.main_loop.call_soon_threadsafe(self.active_call.ended_event.set)
                 self.active_call = None
 
-    def answer_call(self):
-        self.ctrl.send_cmd("accept")
+    async def answer_call(self) -> bool:
+        # Give Baresip 500ms to stabilize the new SIP channel before commanding it to answer.
+        # This prevents the race condition when you hang up and call back immediately.
+        await asyncio.sleep(0.5)
+        
+        # Return the True/False state directly from the BaresipController
+        return self.ctrl.send_cmd("accept")
 
     def make_outbound_call(self, target_extension: str):
         if self.active_call: return None

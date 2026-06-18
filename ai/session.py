@@ -90,9 +90,17 @@ class CallSession:
         self.bridge_start_datetime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if self.direction == "inbound":
-            # THE FIX: Answer the physical line only after Gemini has successfully connected.
             print("[CallSession] Gemini AI initialized. Answering Asterisk line now.")
-            self.engine.answer_call()
+            
+            # 1. Capture the boolean state of the answer attempt
+            call_accepted = await self.engine.answer_call()
+            
+            # 2. STATE-BASED ABORT: If Baresip failed to answer, kill the session instantly.
+            if not call_accepted:
+                print("[CallSession] ABORT: Call dropped before answering. Terminating AI.")
+                self.terminate_bridge()
+                return # Exits the function immediately. No AI tasks, no summary loop!
+                
         else:
             if self.gemini_socket.is_connected:
                 await self.gemini_socket.send_system_event(
@@ -141,13 +149,10 @@ class CallSession:
             self.engine.drop_call()
 
     async def trigger_summary(self, reason):
-        call_duration = time.time() - self.bridge_start_time
-        if call_duration < 3.0:
-            print("[CallSession] Call ended instantly. Aborting summary generation.")
-            self.gemini_socket.is_connected = False
-        else:
-            self.gemini_socket.summary_requested = True
-            await self.gemini_socket.send_system_event("Requesting final summary. Reason: The user has hung up the phone.")
+        # We only get here if the call successfully connected and ran.
+        self.gemini_socket.summary_requested = True
+        await self.gemini_socket.send_system_event(f"Requesting final summary. Reason: {reason}")
+        
         if self.gemini_socket and self.gemini_socket.is_connected:
             await self.gemini_socket.request_summary_and_close(reason)
 
