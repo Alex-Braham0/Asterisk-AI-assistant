@@ -167,10 +167,10 @@ class CallSession:
         self.terminate_bridge()
 
 class HeadlessAgentSession:
-    def __init__(self, config, db, pool, mission_data):
+    def __init__(self, config, db, engine, mission_data):
         self.config = config
         self.db = db
-        self.orchestrator_pool = pool
+        self.engine = engine
         self.mission_data = mission_data
         
         self.gemini_socket = None
