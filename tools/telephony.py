@@ -102,6 +102,14 @@ class ExecuteOutboundDial(BaseTool):
     async def execute(self, session, args):
         target = args.get("target_extension")
         
+        # --- THE FIX: FORCE CLEAR ZOMBIE ENGINE STATE ---
+        # If a previous live call failed to cleanly reset the engine's internal state, 
+        # it will instantly block new outbound calls. Because the Swarm Worker holds the 
+        # orchestrator's line_lock, we are guaranteed the line is physically free. 
+        # We forcefully drop any phantom states to unblock the engine.
+        session.engine.drop_call()
+        await asyncio.sleep(0.5) # Give the OS/Baresip time to clear the socket
+        
         call = session.engine.make_outbound_call(target)
         if not call:
              return {"status": "failed", "message": "Failed to dial. Line may be stuck."}
@@ -110,15 +118,12 @@ class ExecuteOutboundDial(BaseTool):
             # --- PHASE 1: PRE-GENERATION CACHING ---
             pregen_buffer = bytearray()
             
-            # Function to catch the AI's audio while the phone is ringing
             def capture_audio(pcm_data):
                 pregen_buffer.extend(pcm_data)
             
-            # Temporarily hijack the socket's output
             original_inject = session.gemini_socket.pbx_inject_callback
             session.gemini_socket.pbx_inject_callback = capture_audio
             
-            # Command the AI to generate the greeting NOW, before the human answers
             asyncio.create_task(
                 session.gemini_socket.send_system_event(
                     "The phone is currently ringing. Generate your greeting NOW and speak it. "
@@ -126,35 +131,25 @@ class ExecuteOutboundDial(BaseTool):
                 )
             )
             
-            # Block and wait for the human to answer the phone
             await asyncio.wait_for(call.answered_event.wait(), timeout=30.0)
             
             # --- PHASE 2: CONNECTION ESTABLISHED ---
-            
-            # 1. Restore normal audio output routing to the live engine
             session.gemini_socket.pbx_inject_callback = session.engine.inject_audio
             session.gemini_socket.pbx_flush_callback = session.engine.flush_tx_buffer
             
-            # 2. Instantly dump the cached greeting into the live phone line!
             if pregen_buffer:
                 session.engine.inject_audio(bytes(pregen_buffer))
             
-            # 3. FIX DEAFNESS & INTERRUPTIONS: Start the active audio bridge
             session.bridge_active = True
             
             async def bridge_uplink_audio():
-                # DEAF PERIOD: Wait 0.5s to ignore the SIP connection click 
-                # This prevents the click from falsely triggering Gemini's interruption VAD
                 await asyncio.sleep(0.5) 
-                
-                # Purge any noise that accumulated in the Asterisk queue during ringing
                 while not session.engine.pbx_to_ai_queue.empty():
                     try:
                         session.engine.pbx_to_ai_queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
                     
-                # Stream live audio safely from the engine to the socket
                 while session.bridge_active:
                     try:
                         pcm = await asyncio.wait_for(session.engine.pbx_to_ai_queue.get(), timeout=1.0)
@@ -166,16 +161,14 @@ class ExecuteOutboundDial(BaseTool):
 
             asyncio.create_task(bridge_uplink_audio())
             
-            # 4. Monitor for the human hanging up
             async def monitor_call_drop():
                 await call.ended_event.wait()
-                session.bridge_active = False # Kill the audio forwarder cleanly
+                session.bridge_active = False 
                 if session.gemini_socket and session.gemini_socket.is_connected:
                     await session.gemini_socket.send_system_event(
                         "The human has hung up the phone. The call is disconnected. "
                         "You must now use the mark_mission_complete tool to report the outcome."
                     )
-                    # Mute the AI so it doesn't talk over the dead line while finalizing
                     session.gemini_socket.pbx_inject_callback = lambda x: None
 
             asyncio.create_task(monitor_call_drop())
@@ -187,7 +180,6 @@ class ExecuteOutboundDial(BaseTool):
             
         except asyncio.TimeoutError:
             session.engine.drop_call()
-            # If no one answered, restore the original callback so the agent isn't permanently hijacked
             session.gemini_socket.pbx_inject_callback = original_inject 
             return {
                 "status": "failed", 
