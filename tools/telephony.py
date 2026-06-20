@@ -102,22 +102,41 @@ class ExecuteOutboundDial(BaseTool):
     async def execute(self, session, args):
         target = args.get("target_extension")
         
-        # We don't need to lease from a pool anymore. The Scheduler already locked the engine for us.
         call = session.engine.make_outbound_call(target)
         if not call:
              return {"status": "failed", "message": "Failed to dial. Line may be stuck."}
              
         try:
+            # 1. Wait ONLY for the human to answer the phone
             await asyncio.wait_for(call.answered_event.wait(), timeout=30.0)
             
-            # Hot-swap the background socket's audio onto the live phone call
+            # 2. Hot-swap the background socket's audio onto the live phone call
             session.gemini_socket.pbx_to_ai_queue = session.engine.pbx_to_ai_queue
             session.gemini_socket.pbx_inject_callback = session.engine.inject_audio
             session.gemini_socket.pbx_flush_callback = session.engine.flush_tx_buffer
             
-            await session.gemini_socket.send_system_event("Call connected. The human has picked up the phone. Speak immediately.")
-            await call.ended_event.wait()
-            return {"status": "success"}
+            # 3. Launch a background task to monitor for the human hanging up
+            async def monitor_call_drop():
+                await call.ended_event.wait()
+                if session.gemini_socket and session.gemini_socket.is_connected:
+                    # Tell the AI the human left, prompting it to wrap up the mission
+                    await session.gemini_socket.send_system_event("The human has hung up the phone. The call is disconnected. You must now use the mark_mission_complete tool to report the outcome.")
+                    
+                    # Isolate the background agent again to prevent audio bleeding
+                    dummy_queue = asyncio.Queue()
+                    session.gemini_socket.pbx_to_ai_queue = dummy_queue
+                    session.gemini_socket.pbx_inject_callback = lambda x: None
+                    session.gemini_socket.pbx_flush_callback = lambda: None
+
+            # Spawn the monitor without blocking the current thread
+            asyncio.create_task(monitor_call_drop())
+            
+            # Send the system event (we do this as a task so it arrives right AFTER the tool response)
+            asyncio.create_task(session.gemini_socket.send_system_event("Call connected. The human has picked up the phone. Speak immediately."))
+            
+            # 4. RETURN IMMEDIATELY. This unpauses the AI's microphone and allows it to speak!
+            return {"status": "success", "message": "Call connected successfully. The human is on the line."}
+            
         except asyncio.TimeoutError:
             session.engine.drop_call()
             return {
@@ -125,9 +144,3 @@ class ExecuteOutboundDial(BaseTool):
                 "message": "Call timed out. The user did not answer.",
                 "internal_directive": "If you have an alternative extension for this user, you MUST use this tool again to try the next number. Do not mark the mission as complete until all known devices have been tried."
             }
-        finally:
-            # Isolate the background agent again
-            dummy_queue = asyncio.Queue()
-            session.gemini_socket.pbx_to_ai_queue = dummy_queue
-            session.gemini_socket.pbx_inject_callback = lambda x: None
-            session.gemini_socket.pbx_flush_callback = lambda: None
