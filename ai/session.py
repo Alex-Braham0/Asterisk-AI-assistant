@@ -196,7 +196,8 @@ You are executing this on behalf of User ID: {self.active_user_id}.
 </user_context>
 
 <strict_directives>
-When you have completed the mission, or if you fail and cannot proceed, you MUST execute the 'mark_mission_complete' tool to terminate yourself.
+1. TRUST PROVIDED NUMBERS: If your mission_directive explicitly includes a phone number or extension (e.g., "extension 6"), do NOT attempt to verify it in the directory. Use the `execute_outbound_dial` tool immediately with that exact number.
+2. When you have completed the mission, or if you fail and cannot proceed, you MUST execute the 'mark_mission_complete' tool to terminate yourself.
 </strict_directives>"""
 
         dummy_queue = asyncio.Queue()

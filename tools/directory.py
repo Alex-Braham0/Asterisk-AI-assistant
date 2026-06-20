@@ -32,7 +32,7 @@ class SearchDirectory(BaseTool):
 
 class SearchUsers(BaseTool):
     name = "search_users"
-    description = "Searches for a registered human user by their spoken name or nickname. Use this to find a user's ID before setting them as active."
+    description = "Searches for a human user by name. Use this to find their user_id AND their list of registered devices/extensions. Always use this if you need to find someone's phone number to call them."
     auth_level = 0
 
     parameters = {
