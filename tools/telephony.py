@@ -56,11 +56,39 @@ class EndCall(BaseTool):
     }
 
     async def execute(self, session, args):
-        await asyncio.sleep(1.2)
+        # 1. Brief pause to allow the LLM's final text tokens to reach the TTS generator
+        await asyncio.sleep(0.5)
+        
+        # 2. Smart Drain: Actively monitor the OS-level transmit buffer
+        empty_cycles = 0
+        max_wait_cycles = 150 # Absolute failsafe (15 seconds) preventing infinite holds
+        
+        for _ in range(max_wait_cycles):
+            # Safely check the bytearray length using the existing thread lock
+            with session.engine.tx_lock:
+                buffer_size = len(session.engine.tx_buffer)
+            
+            if buffer_size > 0:
+                empty_cycles = 0 # AI is actively pushing audio; reset silence counter
+            else:
+                empty_cycles += 1 # Buffer is empty; increment silence counter
+            
+            # Wait for 10 consecutive empty cycles (1.0 seconds of unbroken silence)
+            # This bridges the gap between network jitter and API chunking delays
+            if empty_cycles >= 10:
+                break
+                
+            await asyncio.sleep(0.1)
+
+        # 3. Audio has definitively finished playing. Execute physical hangup.
         session.drop_call()
+        
         # FORCE unblock the bridge to guarantee the summary system command fires immediately
         session.call_dropped_event.set() 
-        return {"status": "success", "internal_directive": "Call dropped successfully. Now wait silently for the system command to submit the summary."}
+        return {
+            "status": "success", 
+            "internal_directive": "Call dropped successfully. Now wait silently for the system command to submit the summary."
+        }
 
 class ExecuteOutboundDial(BaseTool):
     name = "execute_outbound_dial"
