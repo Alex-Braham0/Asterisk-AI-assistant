@@ -15,27 +15,31 @@ class BackgroundScheduler:
         print("[Swarm Worker] Autonomous Mission loop engaged.")
         while self._is_running:
             try:
-                # Polite Swarm: Only check the database if the phone line is currently free
+                # Polite Swarm: Only check the line lock state
                 if not self.orchestrator.line_lock.locked():
                     now_utc = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
-                    mission = await self.db.missions.get_and_lock_next_mission(now_utc)
                     
-                    if mission:
-                        print(f"\n[Swarm Worker] ⚡ Spawning Headless Agent for Mission {mission['id']}")
-                        
-                        # Claim the line lock so humans can't interrupt the mission
+                    # 1. PEEK: Check if work exists without locking the line or DB
+                    has_mission = await self.db.missions.peek_next_mission(now_utc)
+                    
+                    if has_mission:
+                        # 2. LOCK THE LINE: Block human inbound calls only for the actual mission
                         async with self.orchestrator.line_lock:
-                            try:
-                                await self._process_mission(mission)
-                            finally:
-                                # CRITICAL: Purge stale audio buffers before releasing the lock to the next caller
-                                self.orchestrator.engine.flush_tx_buffer()
-                                while not self.orchestrator.engine.pbx_to_ai_queue.empty():
-                                    try:
-                                        self.orchestrator.engine.pbx_to_ai_queue.get_nowait()
-                                    except asyncio.QueueEmpty:
-                                        break
-                                        
+                            # 3. ATOMIC DB LOCK: Now safe to mark as processing
+                            mission = await self.db.missions.get_and_lock_next_mission(now_utc)
+                            
+                            if mission:
+                                print(f"\n[Swarm Worker] ⚡ Spawning Headless Agent for Mission {mission['id']}")
+                                try:
+                                    await self._process_mission(mission)
+                                finally:
+                                    # CRITICAL: Purge stale audio buffers before releasing the lock
+                                    self.orchestrator.engine.flush_tx_buffer()
+                                    while not self.orchestrator.engine.pbx_to_ai_queue.empty():
+                                        try:
+                                            self.orchestrator.engine.pbx_to_ai_queue.get_nowait()
+                                        except asyncio.QueueEmpty:
+                                            break
             except Exception as e:
                 print(f"[Swarm Worker Error] {e}")
                 

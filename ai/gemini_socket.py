@@ -122,8 +122,11 @@ class GeminiSocket:
                         self.ai_speaking_event.clear()
                     
                     if content.get("interrupted"):
-                        self._log("[Gemini] User Interrupted Event Triggered. (Ignoring Buffer Flush for Diagnostic Routing)")
-                        # self.pbx_flush_callback() <-- DISABLED to prevent self-wiping audio
+                        self._log("[Gemini] User Interrupted Event Triggered. Flushing audio buffers.")
+                        # 1. Flush the OS-level Baresip transmit buffer
+                        self.pbx_flush_callback() 
+                        # 2. Flush the internal WebSocket decoding buffer
+                        buffer_24k.clear()
                         
                     if "modelTurn" in content:
                         parts = content["modelTurn"].get("parts", [])

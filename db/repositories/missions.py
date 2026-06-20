@@ -4,6 +4,13 @@ class MissionRepository:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
+    async def peek_next_mission(self, now_utc) -> bool:
+        """Lightweight check to see if pending missions exist without locking rows."""
+        query = "SELECT 1 FROM Autonomous_Missions WHERE status = 'pending' AND run_at_utc <= $1 LIMIT 1"
+        async with self.pool.acquire() as conn:
+            result = await conn.fetchval(query, now_utc)
+            return bool(result)
+
     async def create_mission(self, owner_user_id: int, run_at_utc, directive: str) -> int:
         query = """
             INSERT INTO Autonomous_Missions (owner_user_id, run_at_utc, mission_directive)

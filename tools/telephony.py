@@ -92,7 +92,11 @@ class ExecuteOutboundDial(BaseTool):
             return {"status": "success"}
         except asyncio.TimeoutError:
             session.engine.drop_call()
-            return {"status": "failed", "message": "Call timed out."}
+            return {
+                "status": "failed", 
+                "message": "Call timed out. The user did not answer.",
+                "internal_directive": "If you have an alternative extension for this user, you MUST use this tool again to try the next number. Do not mark the mission as complete until all known devices have been tried."
+            }
         finally:
             # Isolate the background agent again
             dummy_queue = asyncio.Queue()

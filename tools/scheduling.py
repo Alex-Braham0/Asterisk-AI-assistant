@@ -4,7 +4,11 @@ from tools.base import BaseTool
 
 class DelegateAutonomousTask(BaseTool):
     name = "delegate_autonomous_task"
-    description = "Schedules a headless AI agent to execute a complex, multi-step mission in the background at a specific time. Use this instead of making outbound calls directly."
+    description = (
+        "Schedules a headless AI agent to execute a complex, multi-step mission in the background at a specific time. "
+        "CRITICAL: If the caller asks you to call them back later, and you know they have multiple devices "
+        "(e.g., a desk phone and a mobile), you MUST verbally ask them which number they want you to call before invoking this tool."
+    )
     auth_level = 10
 
     parameters = {
@@ -12,7 +16,7 @@ class DelegateAutonomousTask(BaseTool):
         "properties": {
             "mission_directive": {
                 "type": "STRING", 
-                "description": "Natural language instructions for the headless agent (e.g., 'Call Bob. If he doesn't answer, email him the summary.')."
+                "description": "Natural language instructions for the headless agent. CRITICAL: You MUST explicitly include the target extension or phone number in this directive (e.g., 'Call Alex back at extension 1001.'). Do not leave the agent guessing."
             },
             "scheduled_time_utc": {
                 "type": "STRING", 
