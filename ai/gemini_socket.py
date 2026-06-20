@@ -20,6 +20,9 @@ class GeminiSocket:
         self.tool_call_pending = False
         self.ai_speaking_event = asyncio.Event()
 
+        self.expected_tool_calls = 0
+        self.pending_tool_responses = []
+
     def _log(self, msg):
         timestamp = datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]
         print(f"[{timestamp}] {msg}")
@@ -156,6 +159,10 @@ class GeminiSocket:
                     self.tool_call_pending = True
                     self._log("[Gemini] Tool Call received. Pausing audio uplink.")
                     function_calls = data["toolCall"].get("functionCalls", [])
+
+                    self.expected_tool_calls = len(function_calls)
+                    self.pending_tool_responses = []
+
                     for call in function_calls:
                         call_id = call.get("id")
                         func_name = call.get("name")
@@ -171,22 +178,31 @@ class GeminiSocket:
                 break
 
     async def send_tool_response(self, call_id, name, result_data):
-        response_msg = {
-            "toolResponse": {
-                "functionResponses": [{
-                    "id": call_id,
-                    "name": name,
-                    "response": result_data
-                }]
+        # 1. Append the individual result to our pending batch
+        self.pending_tool_responses.append({
+            "id": call_id,
+            "name": name,
+            "response": result_data
+        })
+        
+        # 2. Check if we have collected all responses for this parallel batch
+        if len(self.pending_tool_responses) == self.expected_tool_calls:
+            response_msg = {
+                "toolResponse": {
+                    "functionResponses": self.pending_tool_responses
+                }
             }
-        }
-        try:
-            await self.ws.send(json.dumps(response_msg))
-            self._log(f"[Gemini] Sent toolResponse for {name}.")
-            self.tool_call_pending = False
-        except Exception as e:
-            self._log(f"[Gemini] Failed to send toolResponse: {e}")
-            self.tool_call_pending = False 
+            try:
+                await self.ws.send(json.dumps(response_msg))
+                self._log(f"[Gemini] Sent aggregated toolResponse for {self.expected_tool_calls} tools.")
+                
+                # Reset state only after the full batch is sent
+                self.tool_call_pending = False
+                self.expected_tool_calls = 0
+                self.pending_tool_responses = []
+            except Exception as e:
+                self._log(f"[Gemini] Failed to send toolResponse: {e}")
+                self.tool_call_pending = False
 
     async def request_summary_and_close(self, reason):
         if self.summary_requested:
