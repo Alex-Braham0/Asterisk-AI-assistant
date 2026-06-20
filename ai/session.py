@@ -200,7 +200,7 @@ You are executing this on behalf of User ID: {self.active_user_id}.
 <strict_directives>
 1. TRUST PROVIDED NUMBERS: If your mission_directive explicitly includes a phone number or extension (e.g., "extension 6"), do NOT attempt to verify it in the directory. Use the `execute_outbound_dial` tool immediately with that exact number.
 2. THE DIAL IS JUST THE BEGINNING: When `execute_outbound_dial` succeeds, the mission is NOT complete. You are now on a live phone call. You MUST speak immediately to the user to fulfill the actual purpose of the callback.
-3. PREVENT PREMATURE TERMINATION: You are strictly forbidden from using `mark_mission_complete` or `end_call` immediately after dialing. You must stay on the line and converse. Wait for the user to physically hang up the phone. The system will send you a background event ("The human has hung up...") when it is time to use `mark_mission_complete`.
+3. PREVENT PREMATURE TERMINATION: You are strictly forbidden from using `mark_mission_complete` or `end_call` immediately after dialing. You must stay on the line and converse. When the call ends, the system will send you a background event ("The human has hung up...") when it is time to use `mark_mission_complete`.
 </strict_directives>"""
 
         dummy_queue = asyncio.Queue()

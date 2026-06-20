@@ -12,7 +12,7 @@ class ToolRegistry:
         # Base tools available to ALL sessions
         registered_classes = [
             SubmitCallSummary, SetActiveUser, UpdateUserTimezone, 
-            TransferCall, SendDTMF, ExecuteOutboundDial,
+            TransferCall, SendDTMF, ExecuteOutboundDial, EndCall,
             SearchDirectory, SearchUsers,
             RegisterNewUser, UpdateEndpointContext, ResolveAndSwitchUser,
             CheckWeather

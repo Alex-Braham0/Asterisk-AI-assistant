@@ -173,7 +173,7 @@ class ExecuteOutboundDial(BaseTool):
             # Instruct the AI to yield the turn and listen, rather than rambling.
             return {
                 "status": "success", 
-                "message": "Call connected. The human has answered. Your pre-generated greeting was successfully played. DO NOT repeat your greeting. Yield your turn, listen to the human's response, and converse naturally."
+                "message": "CRITICAL SYSTEM DIRECTIVE: The call has connected and the user is listening to your pre-generated greeting right now. You MUST remain completely silent. DO NOT narrate your thoughts. DO NOT say 'I am waiting' or 'I am listening'. Output NO spoken text. Yield your turn immediately and wait for the human to speak first."
             }
             
         except asyncio.TimeoutError:
