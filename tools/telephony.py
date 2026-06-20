@@ -46,7 +46,7 @@ class SendDTMF(BaseTool):
 
 class EndCall(BaseTool):
     name = "end_call"
-    description = "Hangs up the phone. After using this, STOP speaking and wait silently. The system will automatically send a SYSTEM COMMAND prompting you to use the 'submit_call_summary' tool. Do NOT submit the summary yourself until commanded."
+    description = "Hangs up the phone. Use this when the conversation is completely finished."
     auth_level = 0
     parameters = {
         "type": "object",
@@ -56,38 +56,34 @@ class EndCall(BaseTool):
     }
 
     async def execute(self, session, args):
-        # 1. Brief pause to allow the LLM's final text tokens to reach the TTS generator
         await asyncio.sleep(0.5)
         
-        # 2. Smart Drain: Actively monitor the OS-level transmit buffer
         empty_cycles = 0
-        max_wait_cycles = 150 # Absolute failsafe (15 seconds) preventing infinite holds
+        max_wait_cycles = 150 
         
         for _ in range(max_wait_cycles):
-            # Safely check the bytearray length using the existing thread lock
             with session.engine.tx_lock:
                 buffer_size = len(session.engine.tx_buffer)
             
             if buffer_size > 0:
-                empty_cycles = 0 # AI is actively pushing audio; reset silence counter
+                empty_cycles = 0 
             else:
-                empty_cycles += 1 # Buffer is empty; increment silence counter
+                empty_cycles += 1 
             
-            # Wait for 10 consecutive empty cycles (1.0 seconds of unbroken silence)
-            # This bridges the gap between network jitter and API chunking delays
             if empty_cycles >= 10:
                 break
                 
             await asyncio.sleep(0.1)
 
-        # 3. Audio has definitively finished playing. Execute physical hangup.
-        session.drop_call()
+        # Safely execute the drop command against the engine so Headless Agents can use it
+        session.engine.drop_call()
         
-        # FORCE unblock the bridge to guarantee the summary system command fires immediately
-        session.call_dropped_event.set() 
+        if hasattr(session, 'call_dropped_event'):
+            session.call_dropped_event.set() 
+            
         return {
             "status": "success", 
-            "internal_directive": "Call dropped successfully. Now wait silently for the system command to submit the summary."
+            "internal_directive": "Call dropped successfully. If you are a background agent, you MUST now use the 'mark_mission_complete' tool to terminate your session."
         }
 
 class ExecuteOutboundDial(BaseTool):
@@ -102,13 +98,9 @@ class ExecuteOutboundDial(BaseTool):
     async def execute(self, session, args):
         target = args.get("target_extension")
         
-        # --- THE FIX: FORCE CLEAR ZOMBIE ENGINE STATE ---
-        # If a previous live call failed to cleanly reset the engine's internal state, 
-        # it will instantly block new outbound calls. Because the Swarm Worker holds the 
-        # orchestrator's line_lock, we are guaranteed the line is physically free. 
-        # We forcefully drop any phantom states to unblock the engine.
+        # Force clear zombie engine state
         session.engine.drop_call()
-        await asyncio.sleep(0.5) # Give the OS/Baresip time to clear the socket
+        await asyncio.sleep(0.5) 
         
         call = session.engine.make_outbound_call(target)
         if not call:
@@ -143,7 +135,12 @@ class ExecuteOutboundDial(BaseTool):
             session.bridge_active = True
             
             async def bridge_uplink_audio():
-                await asyncio.sleep(0.5) 
+                # DYNAMIC DEAF PERIOD: Calculate exactly how long the greeting is (16,000 bytes per second)
+                # This protects the greeting from being VAD-flushed by SIP connection clicks or human breathing.
+                pregen_duration = len(pregen_buffer) / 16000.0
+                deaf_time = max(0.5, pregen_duration)
+                await asyncio.sleep(deaf_time) 
+                
                 while not session.engine.pbx_to_ai_queue.empty():
                     try:
                         session.engine.pbx_to_ai_queue.get_nowait()
@@ -173,9 +170,10 @@ class ExecuteOutboundDial(BaseTool):
 
             asyncio.create_task(monitor_call_drop())
             
+            # Instruct the AI to yield the turn and listen, rather than rambling.
             return {
                 "status": "success", 
-                "message": "Call connected and human is on the line. Your pre-generated greeting was delivered successfully."
+                "message": "Call connected. The human has answered. Your pre-generated greeting was successfully played. DO NOT repeat your greeting. Yield your turn, listen to the human's response, and converse naturally."
             }
             
         except asyncio.TimeoutError:
