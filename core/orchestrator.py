@@ -4,6 +4,7 @@ from core.scheduler import BackgroundScheduler
 from core.state_manager import CallStateManager
 from db.connection import DatabaseConnection
 from telephony.engine import MediaEngine
+from services.memory_daemon import DBMemoryDaemon
 
 class SIPAgentOrchestrator:
     def __init__(self, config, db: DatabaseConnection, loop: asyncio.AbstractEventLoop):
@@ -18,6 +19,8 @@ class SIPAgentOrchestrator:
         self.engine = MediaEngine(self.config, self.loop, self._handle_inbound_call)
         self.scheduler = BackgroundScheduler(self.config, self.db, self)
 
+        self.memory_daemon = DBMemoryDaemon(self.config, self.db.pool)
+
     def start(self) -> None:
         print("\n--- Smart Singleton Swarm Online ---")
 
@@ -27,6 +30,8 @@ class SIPAgentOrchestrator:
 
         self.engine.start()
         self.loop.create_task(self.scheduler.run())
+
+        self.loop.create_task(self.memory_daemon.run())
         
         try:
             self.loop.run_forever()

@@ -14,14 +14,10 @@ class MemoryUpdate(BaseModel):
     endpoint_profile: str
 
 class DBMemoryDaemon:
-    def __init__(self, config_path: str = "config.json"):
-        with open(config_path, "r", encoding="utf-8") as f:
-            self.config = json.load(f)
-            
-        self.client = genai.Client(api_key=self.config['gemini_api_key'])
-        self.db_url = self.config['postgres_url']
-        self.pool = None
-
+    def __init__(self, config, pool):
+        self.config = config
+        self.client = genai.Client(api_key=self.config.gemini_api_key)
+        self.pool = pool
     async def connect(self):
         self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
 
@@ -129,7 +125,6 @@ Then, output the fully updated memory strings.
             await conn.execute("UPDATE Tasks SET status = $1 WHERE id = $2", status, task_id)
 
     async def run(self):
-        await self.connect()
         print("[Memory Daemon] Connected to DB. Scanning for synthesis tasks...")
         while True:
             try:
