@@ -25,14 +25,19 @@ class MediaEngine:
         self._audio_running = False
 
     def _init_virtual_cables(self):
-        print("[MediaEngine] Initializing PulseAudio virtual cables...")
-        subprocess.run("pactl list short modules | grep null-sink | cut -f1 | xargs -L1 pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
+        self.pid = os.getpid()
+        self.tx_sink = f"Baresip_Tx_{self.pid}"
+        self.rx_sink = f"Baresip_Rx_{self.pid}"
         
-        tx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], capture_output=True, text=True)
-        rx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Rx", "sink_properties=device.description=Baresip_Rx"], capture_output=True, text=True)
+        print(f"[MediaEngine] Initializing PulseAudio virtual cables for PID {self.pid}...")
         
-        if tx_result.returncode != 0 or rx_result.returncode != 0:
-            raise RuntimeError(f"FATAL: PulseAudio cable allocation failed.\nTx Error: {tx_result.stderr}\nRx Error: {rx_result.stderr}")
+        # Clean up any orphaned sinks from this specific PID
+        subprocess.run(f"pactl list short modules | grep {self.tx_sink} | cut -f1 | xargs -r pactl unload-module", shell=True)
+        subprocess.run(f"pactl list short modules | grep {self.rx_sink} | cut -f1 | xargs -r pactl unload-module", shell=True)
+        
+        # Load dynamically named sinks
+        subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={self.tx_sink}"], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={self.rx_sink}"], check=True, stdout=subprocess.DEVNULL)
 
     def start(self):
         self._init_virtual_cables()
@@ -40,18 +45,39 @@ class MediaEngine:
         
         # THE FIX: Route Python's global audio strictly to the virtual cables via OS environment variables.
         # This completely bypasses PortAudio's flaky device discovery cache.
-        os.environ["PULSE_SINK"] = "Baresip_Tx"
-        os.environ["PULSE_SOURCE"] = "Baresip_Rx.monitor"
+        os.environ["PULSE_SINK"] = self.tx_sink
+        os.environ["PULSE_SOURCE"] = f"{self.rx_sink}.monitor"
         
         # Inject the INVERSE routing into the Baresip process so they cross-talk perfectly
         env = os.environ.copy()
-        env["PULSE_SINK"] = "Baresip_Rx"            
-        env["PULSE_SOURCE"] = "Baresip_Tx.monitor"  
+        env["PULSE_SINK"] = self.rx_sink            
+        env["PULSE_SOURCE"] = f"{self.tx_sink}.monitor"
 
         cmd = ["baresip"]
         self.baresip_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        self.main_loop.create_task(self._baresip_watchdog())
+
         time.sleep(1)
         self.ctrl.start()
+
+    async def _baresip_watchdog(self):
+        """Polls the subprocess. If it dies, force systemd to restart the app."""
+        while self._audio_running or self.baresip_process:
+            if self.baresip_process and self.baresip_process.poll() is not None:
+                exit_code = self.baresip_process.returncode
+                print(f"[FATAL] Baresip subprocess crashed unexpectedly (Exit Code: {exit_code}).")
+                
+                # Flush state
+                self.drop_call()
+                self._stop_audio_stream()
+                
+                # Force kill the main Python process. 
+                # systemd will catch this and execute a clean application reboot.
+                import sys
+                sys.exit(1)
+                
+            await asyncio.sleep(1)
 
     def stop(self):
         if self.active_call: 

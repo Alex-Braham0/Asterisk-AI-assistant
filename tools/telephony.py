@@ -161,7 +161,7 @@ class ExecuteOutboundDial(BaseTool):
                     session.gemini_socket.pbx_inject_callback = lambda x: None
 
         # Spawn the monitor task and DO NOT block
-        asyncio.create_task(monitor_call())
+        session.spawn_managed_task(monitor_call())
         
         # Temporarily mute the AI while ringing so it doesn't try to talk to the dial tone
         session.gemini_socket.pbx_inject_callback = lambda x: None

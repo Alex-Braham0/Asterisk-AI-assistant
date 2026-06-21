@@ -64,13 +64,23 @@ class GeminiSocket:
         return False
 
     async def run_audio_bridge(self, on_disconnect_callback):
-        uplink_task = asyncio.create_task(self._uplink_loop())
-        downlink_task = asyncio.create_task(self._downlink_loop())
+        uplink_task = asyncio.create_task(self._uplink_loop(), name="uplink_task")
+        downlink_task = asyncio.create_task(self._downlink_loop(), name="downlink_task")
         
         try:
-            await asyncio.gather(uplink_task, downlink_task)
+            # Wait until EITHER the uplink or downlink task terminates
+            done, pending = await asyncio.wait(
+                [uplink_task, downlink_task], 
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # Forcefully terminate the surviving task
+            for task in pending:
+                task.cancel()
+                
         except asyncio.CancelledError:
-            pass
+            uplink_task.cancel()
+            downlink_task.cancel()
         finally:
             self.is_connected = False
             if self.ws:

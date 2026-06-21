@@ -139,3 +139,11 @@ Currently, the Headless Agent has `execute_outbound_dial`. You can easily expand
 ### 3. Long-Term Vector Memory
 Currently, `memory_daemon.py` generates text-based summaries for the system prompt. As the database grows, the prompt will exceed context window efficiency limits.
 * **Upgrade:** Implement `pgvector` in PostgreSQL. Chunk the call summaries, generate embeddings, and inject a **RAG (Retrieval-Augmented Generation)** tool so the AI can actively search past conversations rather than having them hardcoded into its boot prompt.
+
+### 4. Baresip Controller Configuration
+The Python wrapper requires the Baresip TCP control module to be active. You must append this to your `~/.baresip/config` file before starting the application:
+
+```text
+# ~/.baresip/config
+module_app      ctrl_tcp.so
+ctrl_tcp_bind   127.0.0.1:4444

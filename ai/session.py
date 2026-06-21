@@ -25,6 +25,7 @@ class CallSession:
         self.bridge_start_datetime = None
         self.active_user_id = None
         self.active_user_level = 0
+        self._background_tasks = set()
 
     async def setup_connection(self, direction="inbound", target_info=None):
         self.direction = direction
@@ -99,7 +100,9 @@ class CallSession:
             if not call_accepted:
                 print("[CallSession] ABORT: Call dropped before answering. Terminating AI.")
                 self.terminate_bridge()
-                return # Exits the function immediately. No AI tasks, no summary loop!
+                if self.gemini_socket and self.gemini_socket.ws:
+                    asyncio.create_task(self.gemini_socket.ws.close())
+                return
                 
         else:
             if self.gemini_socket.is_connected:
@@ -135,6 +138,13 @@ class CallSession:
         
         self.tools_called.append({"tool": name, "args": args, "response": result})
 
+    def spawn_managed_task(self, coro):
+        """Spawns a background task and tracks it for safe teardown."""
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
     async def _monitor_call_state(self):
         try:
             call_id = getattr(self.call, '_id', None)
@@ -161,6 +171,11 @@ class CallSession:
             self.gemini_socket.is_connected = False
         if self.ai_task: 
             self.ai_task.cancel()
+        
+        # Purge all managed background tool tasks
+        for task in list(self._background_tasks):
+            if not task.done():
+                task.cancel()
 
     def cleanup(self):
         self.drop_call()
@@ -178,6 +193,7 @@ class HeadlessAgentSession:
         
         self.active_user_id = mission_data['owner_user_id']
         self.target_extension = "HEADLESS_AGENT"
+        self._background_tasks = set()
 
     async def execute_mission(self):
         user_memory = await self.db.users.get_user_memory(self.active_user_id, access_level="PRIVATE")

@@ -64,11 +64,16 @@ class SubmitCallSummary(BaseTool):
         print(f"[ToolRegistry] Summary received. Queuing update for extension {extension}.")
         asyncio.create_task(session.db.tasks.spool_call_summary(extension, args))
         
-        # FAILSAFE CLEANUP: Force the WebSocket to close so the Orchestrator lock releases
-        session.gemini_socket.is_connected = False
-        session.drop_call()
-        session.terminate_bridge()
-        return None
+        async def delayed_teardown():
+            await asyncio.sleep(1.5) # Give the WebSocket time to send the toolResponse
+            session.gemini_socket.is_connected = False
+            session.drop_call()
+            session.terminate_bridge()
+            
+        asyncio.create_task(delayed_teardown())
+        
+        # FIX: Actually return a response to satisfy the Gemini API
+        return {"status": "success", "internal_directive": "Summary logged. System shutting down."}
 
 class SetActiveUser(BaseTool):
     name = "set_active_user"

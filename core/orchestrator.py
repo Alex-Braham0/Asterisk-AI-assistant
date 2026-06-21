@@ -33,6 +33,9 @@ class SIPAgentOrchestrator:
         except KeyboardInterrupt:
             self.engine.stop()
             self.scheduler.stop()
+
+            self.loop.run_until_complete(self.db.disconnect())
+
             self.loop.stop()
 
     def _handle_inbound_call(self, engine, call) -> None:
