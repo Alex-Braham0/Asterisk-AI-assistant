@@ -80,46 +80,56 @@ Then, output the fully updated memory strings.
             "transcript": key_exchanges
         }, indent=2)
 
+        # Fetch current memory from Markdown files
+        ep_file = f"./memory_files/endpoints/{extension}.md"
+        ep_mem = "No specific memory data."
+        if os.path.exists(ep_file):
+            with open(ep_file, "r", encoding="utf-8") as f:
+                ep_mem = f.read()
+
+        pub_mem = "No existing memory profile."
+        priv_mem = "No existing memory profile."
+        if user_id:
+            pub_file = f"./memory_files/users/{user_id}_public.md"
+            priv_file = f"./memory_files/users/{user_id}_private.md"
+            if os.path.exists(pub_file):
+                with open(pub_file, "r", encoding="utf-8") as f:
+                    pub_mem = f.read()
+            if os.path.exists(priv_file):
+                with open(priv_file, "r", encoding="utf-8") as f:
+                    priv_mem = f.read()
+
+        # Call LLM (Run in thread to avoid blocking asyncio loop)
+        device_type = "UNKNOWN" 
         async with self.db.pool.acquire() as conn:
-            # Fetch current memory
-            ep_data = await conn.fetchrow("SELECT endpoint_memory, device_type FROM Endpoints WHERE extension = $1", str(extension))
-            if not ep_data:
-                await self._mark_task_done(task_id, 'failed')
-                return
-                
-            ep_mem = ep_data['endpoint_memory']
-            device_type = ep_data['device_type']
+            device_type_val = await conn.fetchval("SELECT device_type FROM Endpoints WHERE extension = $1", str(extension))
+            if device_type_val: device_type = device_type_val
+            
+        new_profiles = await asyncio.to_thread(
+            self.generate_new_profiles, pub_mem, priv_mem, ep_mem, call_data_payload, device_type
+        )
 
-            pub_mem = "No existing memory profile."
-            priv_mem = "No existing memory profile."
-            if user_id:
-                user_data = await conn.fetchrow("SELECT public_memory, private_memory FROM Users WHERE id = $1", int(user_id))
-                if user_data:
-                    pub_mem = user_data['public_memory']
-                    priv_mem = user_data['private_memory']
+        # Write new memories back to Markdown files
+        os.makedirs("./memory_files/endpoints", exist_ok=True)
+        new_ep_mem = new_profiles.get("endpoint_profile", "").strip()
+        if new_ep_mem and new_ep_mem != ep_mem and new_ep_mem.lower() not in ["", "none", "[]"]:
+            with open(ep_file, "w", encoding="utf-8") as f:
+                f.write(new_ep_mem)
 
-            # Call LLM (Run in thread to avoid blocking asyncio loop)
-            new_profiles = await asyncio.to_thread(
-                self.generate_new_profiles, pub_mem, priv_mem, ep_mem, call_data_payload, device_type
-            )
+        if user_id:
+            os.makedirs("./memory_files/users", exist_ok=True)
+            new_pub = new_profiles.get("user_profile_public", "").strip()
+            new_priv = new_profiles.get("user_profile_private", "").strip()
+            
+            if new_pub and new_pub != pub_mem and new_pub.lower() not in ["", "none", "[]"]:
+                with open(pub_file, "w", encoding="utf-8") as f:
+                    f.write(new_pub)
+            if new_priv and new_priv != priv_mem and new_priv.lower() not in ["", "none", "[]"]:
+                with open(priv_file, "w", encoding="utf-8") as f:
+                    f.write(new_priv)
 
-            # Atomic Updates
-            async with conn.transaction():
-                new_ep_mem = new_profiles.get("endpoint_profile", "").strip()
-                if new_ep_mem and new_ep_mem != ep_mem and new_ep_mem.lower() not in ["", "none", "[]"]:
-                    await conn.execute("UPDATE Endpoints SET endpoint_memory = $1 WHERE extension = $2", new_ep_mem, str(extension))
-
-                if user_id:
-                    new_pub = new_profiles.get("user_profile_public", "").strip()
-                    new_priv = new_profiles.get("user_profile_private", "").strip()
-                    
-                    if new_pub and new_pub != pub_mem and new_pub.lower() not in ["", "none", "[]"]:
-                        await conn.execute("UPDATE Users SET public_memory = $1 WHERE id = $2", new_pub, int(user_id))
-                    if new_priv and new_priv != priv_mem and new_priv.lower() not in ["", "none", "[]"]:
-                        await conn.execute("UPDATE Users SET private_memory = $1 WHERE id = $2", new_priv, int(user_id))
-
-            await self._mark_task_done(task_id, 'completed')
-            print(f"[MemoryDaemon] Successfully processed memory update for Ext {extension}")
+        await self._mark_task_done(task_id, 'completed')
+        print(f"[MemoryDaemon] Successfully processed memory update for Ext {extension} to MD files.")
 
     async def _mark_task_done(self, task_id: int, status: str):
         async with self.db.pool.acquire() as conn:

@@ -88,7 +88,5 @@ class EndpointRepository:
         return "No specific memory data."
 
     async def get_extension_memory(self, extension: str) -> str:
-        query = "SELECT endpoint_memory FROM Endpoints WHERE extension = $1"
-        async with self.pool.acquire() as conn:
-            val = await conn.fetchval(query, str(extension))
-            return val or "No specific memory data."
+        ep_file = os.path.join(self.memory_endpoints_dir, f"{extension}.md")
+        return self._read_profile_file(ep_file)

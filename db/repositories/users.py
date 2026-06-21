@@ -34,14 +34,13 @@ class UserRepository:
         if access_level == 'BLOCKED':
             return "ACCESS DENIED: Physical device restrictions prevent loading user memory."
             
-        query = "SELECT public_memory, private_memory FROM Users WHERE id = $1"
-        async with self.pool.acquire() as conn:
-            record = await conn.fetchrow(query, int(user_id_or_name))
-            
-        if not record:
-            return "No existing memory profile."
+        pub_file = os.path.join(self.memory_users_dir, f"{user_id_or_name}_public.md")
+        priv_file = os.path.join(self.memory_users_dir, f"{user_id_or_name}_private.md")
+        
+        pub_mem = self._read_profile_file(pub_file)
+        priv_mem = self._read_profile_file(priv_file)
 
         if access_level == 'PRIVATE':
-            return f"--- PUBLIC MEMORY ---\n{record['public_memory']}\n\n--- PRIVATE MEMORY ---\n{record['private_memory']}"
+            return f"--- PUBLIC MEMORY ---\n{pub_mem}\n\n--- PRIVATE MEMORY ---\n{priv_mem}"
             
-        return f"--- PUBLIC MEMORY ---\n{record['public_memory']}\n\n[PRIVATE MEMORY REDACTED - UNVERIFIED DEVICE LOCATION]"
+        return f"--- PUBLIC MEMORY ---\n{pub_mem}\n\n[PRIVATE MEMORY REDACTED - UNVERIFIED DEVICE LOCATION]"

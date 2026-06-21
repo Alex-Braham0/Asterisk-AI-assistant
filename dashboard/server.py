@@ -120,15 +120,34 @@ class DashboardServer:
         return web.json_response({"status": "success"})
 
     async def get_memory(self, request):
-        file_path = self.base_dir / f"memory_files/{request.match_info['type']}/{request.match_info['item_id']}.md"
-        content = file_path.read_text() if file_path.exists() else ""
-        return web.json_response({"content": content})
+        mem_type = request.match_info['type']
+        item_id = request.match_info['item_id']
+        content = ""
+        
+        async with self.db.pool.acquire() as conn:
+            if mem_type == 'users':
+                user_id, visibility = item_id.split('_')
+                column = "public_memory" if visibility == "public" else "private_memory"
+                content = await conn.fetchval(f"SELECT {column} FROM Users WHERE id = $1", int(user_id))
+            elif mem_type == 'endpoints':
+                content = await conn.fetchval("SELECT endpoint_memory FROM Endpoints WHERE extension = $1", item_id)
+                
+        return web.json_response({"content": content or ""})
 
     async def update_memory(self, request):
-        file_path = self.base_dir / f"memory_files/{request.match_info['type']}/{request.match_info['item_id']}.md"
+        mem_type = request.match_info['type']
+        item_id = request.match_info['item_id']
         data = await request.json()
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(data.get("content", ""))
+        new_content = data.get("content", "")
+        
+        async with self.db.pool.acquire() as conn:
+            if mem_type == 'users':
+                user_id, visibility = item_id.split('_')
+                column = "public_memory" if visibility == "public" else "private_memory"
+                await conn.execute(f"UPDATE Users SET {column} = $1 WHERE id = $2", new_content, int(user_id))
+            elif mem_type == 'endpoints':
+                await conn.execute("UPDATE Endpoints SET endpoint_memory = $1 WHERE extension = $2", new_content, item_id)
+                
         return web.json_response({"status": "success"})
 
     async def get_system_health(self, request):
@@ -207,8 +226,8 @@ class DashboardServer:
         try:
             pub_file = self.base_dir / f"memory_files/users/{user_id}_public.md"
             priv_file = self.base_dir / f"memory_files/users/{user_id}_private.md"
-            if pub_file.exists(): os.remove(pub_file)
-            if priv_file.exists(): os.remove(priv_file)
+            # if pub_file.exists(): os.remove(pub_file)
+            # if priv_file.exists(): os.remove(priv_file)
         except Exception: pass
             
         return web.json_response({"status": "success"})
