@@ -25,39 +25,38 @@ class MediaEngine:
         self._audio_running = False
 
     def _init_virtual_cables(self):
-        self.pid = os.getpid()
-        self.tx_sink = f"Baresip_Tx_{self.pid}"
-        self.rx_sink = f"Baresip_Rx_{self.pid}"
+        print("[MediaEngine] Initializing PulseAudio virtual cables...")
+        import subprocess
+        subprocess.run("pactl list short modules | grep null-sink | cut -f1 | xargs -L1 pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
         
-        print(f"[MediaEngine] Initializing PulseAudio virtual cables for PID {self.pid}...")
-        
-        subprocess.run(f"pactl list short modules | grep {self.tx_sink} | cut -f1 | xargs -r pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
-        subprocess.run(f"pactl list short modules | grep {self.rx_sink} | cut -f1 | xargs -r pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
-        
-        tx_result = subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={self.tx_sink}", f"sink_properties=device.description={self.tx_sink}"], capture_output=True, text=True)
-        rx_result = subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={self.rx_sink}", f"sink_properties=device.description={self.rx_sink}"], capture_output=True, text=True)
+        tx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], capture_output=True, text=True)
+        rx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Rx", "sink_properties=device.description=Baresip_Rx"], capture_output=True, text=True)
         
         if tx_result.returncode != 0 or rx_result.returncode != 0:
             raise RuntimeError(f"FATAL: PulseAudio cable allocation failed.\nTx Error: {tx_result.stderr}\nRx Error: {rx_result.stderr}")
 
     def start(self):
+        self._init_virtual_cables()
         print("[MediaEngine] Booting Singleton Baresip Engine...")
         
-        # Baresip receives the inverse of the global routing
+        # Original static routing
+        os.environ["PULSE_SINK"] = "Baresip_Tx"
+        os.environ["PULSE_SOURCE"] = "Baresip_Rx.monitor"
+        
         env = os.environ.copy()
-        pid = os.getpid()
-        env["PULSE_SINK"] = f"Baresip_Rx_{pid}"
-        env["PULSE_SOURCE"] = f"Baresip_Tx_{pid}.monitor"
+        env["PULSE_SINK"] = "Baresip_Rx"            
+        env["PULSE_SOURCE"] = "Baresip_Tx.monitor"  
 
+        import subprocess
         cmd = ["baresip"]
         self.baresip_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
+        # Keep the watchdog, it does not affect audio
         if hasattr(self, '_baresip_watchdog'):
             self.main_loop.create_task(self._baresip_watchdog())
-        
+            
         import time
-        # Increased to 2s to guarantee Baresip's TCP control socket is listening
-        time.sleep(2) 
+        time.sleep(1)
         self.ctrl.start()
 
     async def _baresip_watchdog(self):
@@ -175,8 +174,10 @@ class MediaEngine:
                     outdata[:] = b'\x00' * req_bytes
                     
             if not ai_speaking:
-                # FIX: Defer execution to the loop-safe helper
-                self.main_loop.call_soon_threadsafe(self._safe_enqueue, bytes(indata))
+                try: 
+                    self.main_loop.call_soon_threadsafe(self.pbx_to_ai_queue.put_nowait, bytes(indata))
+                except asyncio.QueueFull: 
+                    pass
 
         try:
             # Using device=None forces Python to use the OS default.
