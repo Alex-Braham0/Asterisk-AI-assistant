@@ -5,9 +5,10 @@ from tools.base import BaseTool
 class DelegateAutonomousTask(BaseTool):
     name = "delegate_autonomous_task"
     description = (
-        "Schedules a headless AI agent to execute a complex, multi-step mission in the background at a specific time. "
-        "CRITICAL: If the caller asks you to call them back later, and you know they have multiple devices "
-        "(e.g., a desk phone and a mobile), you MUST verbally ask them which number they want you to call before invoking this tool."
+        "Schedules a headless AI agent to execute a background mission. "
+        "CRITICAL: This tool ONLY accepts exactly two parameters. "
+        "Do NOT hallucinate a 'target_extension' parameter. You must embed any phone numbers "
+        "directly inside the 'mission_directive' string."
     )
     auth_level = 10
 
@@ -16,7 +17,7 @@ class DelegateAutonomousTask(BaseTool):
         "properties": {
             "mission_directive": {
                 "type": "STRING", 
-                "description": "Natural language instructions for the headless agent. CRITICAL: You MUST explicitly include the target extension or phone number in this directive (e.g., 'Call Alex back at extension 1001.'). Do not leave the agent guessing."
+                "description": "Natural language instructions. MUST contain the target extension (e.g., 'Call Alex back at extension 6.')."
             },
             "scheduled_time_utc": {
                 "type": "STRING", 
