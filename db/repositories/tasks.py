@@ -3,6 +3,7 @@ import time
 import json
 import asyncio
 import asyncpg
+import uuid
 
 class TaskRepository:
     def __init__(self, pool: asyncpg.Pool, spool_dir: str = "./call_summaries"):
@@ -51,7 +52,16 @@ class TaskRepository:
             json.dump(data, f, indent=4)
 
     async def spool_call_summary(self, extension: str, summary_data: dict) -> None:
+<<<<<<< HEAD
         payload = json.dumps(summary_data)
         query = "INSERT INTO Tasks (task_type, payload, scheduled_time, status) VALUES ($1, $2, CURRENT_TIMESTAMP, 'pending')"
         async with self.pool.acquire() as conn:
             await conn.execute(query, 'memory_synthesis', payload)
+=======
+        # Generate a unique hex string (e.g., 'a1b2c3d4')
+        unique_id = uuid.uuid4().hex[:8]
+        filename = f"{extension}_{int(time.time())}_{unique_id}.json"
+        filepath = os.path.join(self.spool_pending, filename)
+        
+        await asyncio.to_thread(self._write_spool_file, filepath, summary_data)
+>>>>>>> feature/local-dashboard

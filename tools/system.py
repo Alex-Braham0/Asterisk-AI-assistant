@@ -170,6 +170,13 @@ class MarkMissionComplete(BaseTool):
     }
 
     async def execute(self, session, args):
-        print(f"[Swarm Worker] Agent Self-Terminated. Final Report: {args.get('final_report')}")
+        report = args.get('final_report')
+        print(f"[Swarm Worker] Agent Self-Terminated. Final Report: {report}")
+        
+        # Determine the mission ID from the session (Injected via HeadlessAgentSession)
+        mission_id = session.mission_data.get('id')
+        if mission_id:
+            await session.db.missions.update_mission_status(mission_id, 'completed', final_report=report)
+            
         session.gemini_socket.is_connected = False
         return {"status": "success"}

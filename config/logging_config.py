@@ -1,6 +1,7 @@
 import logging
 import sys
 from logging.handlers import MemoryHandler
+from dashboard.server import DashboardLogHandler
 
 # 1. Create a custom handler that ruthlessly ignores buffer capacity
 class CrashOnlyMemoryHandler(MemoryHandler):
@@ -54,6 +55,11 @@ def setup_logging(level: str = "INFO") -> None:
 
     root_logger.addHandler(console_handler)
 
+    dash_handler = DashboardLogHandler()
+    dash_handler.setFormatter(formatter)
+    dash_handler.setLevel(logging.INFO)
+    root_logger.addHandler(dash_handler)
+
     # Prevent massive debug floods coming from low-level network components
     logging.getLogger("websockets").setLevel(logging.WARNING)
 
@@ -62,5 +68,8 @@ def setup_logging(level: str = "INFO") -> None:
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     logging.getLogger("pymysql").setLevel(logging.WARNING)
     logging.getLogger("asyncpg").setLevel(logging.WARNING)
+
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp.server").setLevel(logging.WARNING)
 
     logging.info("Application-wide logging infrastructure initialized successfully.")

@@ -36,10 +36,15 @@ class MissionRepository:
             record = await conn.fetchrow(query, now_utc)
             return dict(record) if record else None
 
-    async def update_mission_status(self, mission_id: int, status: str) -> None:
-        query = "UPDATE Autonomous_Missions SET status = $1 WHERE id = $2"
-        async with self.pool.acquire() as conn:
-            await conn.execute(query, status, mission_id)
+    async def update_mission_status(self, mission_id: int, status: str, final_report: str = None) -> None:
+        if final_report:
+            query = "UPDATE Autonomous_Missions SET status = $1, final_report = $2 WHERE id = $3"
+            async with self.pool.acquire() as conn:
+                await conn.execute(query, status, final_report, mission_id)
+        else:
+            query = "UPDATE Autonomous_Missions SET status = $1 WHERE id = $2"
+            async with self.pool.acquire() as conn:
+                await conn.execute(query, status, mission_id)
 
     async def recover_orphaned_missions(self) -> int:
         """Resets any missions that were stuck in 'processing' during a system crash."""
