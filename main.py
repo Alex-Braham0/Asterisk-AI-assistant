@@ -1,6 +1,10 @@
 import os
 import sys
 
+APP_PID = os.getpid()
+os.environ["PULSE_SINK"] = f"Baresip_Tx_{APP_PID}"
+os.environ["PULSE_SOURCE"] = f"Baresip_Rx_{APP_PID}.monitor"
+
 import asyncio
 from config.settings import AppSettings
 from config.logging_config import setup_logging

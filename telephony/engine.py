@@ -31,33 +31,30 @@ class MediaEngine:
         
         print(f"[MediaEngine] Initializing PulseAudio virtual cables for PID {self.pid}...")
         
-        # Clean up any orphaned sinks from this specific PID
-        subprocess.run(f"pactl list short modules | grep {self.tx_sink} | cut -f1 | xargs -r pactl unload-module", shell=True)
-        subprocess.run(f"pactl list short modules | grep {self.rx_sink} | cut -f1 | xargs -r pactl unload-module", shell=True)
+        subprocess.run(f"pactl list short modules | grep {self.tx_sink} | cut -f1 | xargs -r pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"pactl list short modules | grep {self.rx_sink} | cut -f1 | xargs -r pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
         
-        # Load dynamically named sinks
-        subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={self.tx_sink}"], check=True, stdout=subprocess.DEVNULL)
-        subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={self.rx_sink}"], check=True, stdout=subprocess.DEVNULL)
+        tx_result = subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={self.tx_sink}", f"sink_properties=device.description={self.tx_sink}"], capture_output=True, text=True)
+        rx_result = subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={self.rx_sink}", f"sink_properties=device.description={self.rx_sink}"], capture_output=True, text=True)
+        
+        if tx_result.returncode != 0 or rx_result.returncode != 0:
+            raise RuntimeError(f"FATAL: PulseAudio cable allocation failed.\nTx Error: {tx_result.stderr}\nRx Error: {rx_result.stderr}")
 
     def start(self):
         self._init_virtual_cables()
         print("[MediaEngine] Booting Singleton Baresip Engine...")
         
-        # THE FIX: Route Python's global audio strictly to the virtual cables via OS environment variables.
-        # This completely bypasses PortAudio's flaky device discovery cache.
-        os.environ["PULSE_SINK"] = self.tx_sink
-        os.environ["PULSE_SOURCE"] = f"{self.rx_sink}.monitor"
-        
-        # Inject the INVERSE routing into the Baresip process so they cross-talk perfectly
+        # Inject the INVERSE routing into the Baresip process
         env = os.environ.copy()
         env["PULSE_SINK"] = self.rx_sink            
-        env["PULSE_SOURCE"] = f"{self.tx_sink}.monitor"
+        env["PULSE_SOURCE"] = f"{self.tx_sink}.monitor"  
 
         cmd = ["baresip"]
         self.baresip_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
+        
         self.main_loop.create_task(self._baresip_watchdog())
-
+        
+        import time
         time.sleep(1)
         self.ctrl.start()
 

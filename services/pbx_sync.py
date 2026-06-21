@@ -50,8 +50,37 @@ class PBXSynchronizer:
 
             active_extensions = []
             
+            # Define SQL queries outside the loop
+            ep_query = """
+                INSERT INTO Endpoints (extension, display_name, is_active, device_type)
+                VALUES ($1, $2, TRUE, $3)
+                ON CONFLICT (extension) 
+                DO UPDATE SET 
+                    display_name = EXCLUDED.display_name, 
+                    is_active = TRUE, 
+                    device_type = EXCLUDED.device_type; 
+            """
+            
+            user_query = """
+                WITH new_user AS (
+                    INSERT INTO Users (primary_name)
+                    SELECT $1::varchar WHERE NOT EXISTS (SELECT 1 FROM Users WHERE primary_name = $1::varchar)
+                    RETURNING id
+                )
+                SELECT id FROM new_user
+                UNION ALL
+                SELECT id FROM Users WHERE primary_name = $1::varchar LIMIT 1;
+            """
+            
+            link_query = """
+                INSERT INTO Endpoint_Users (extension, user_id, is_default, access_level)
+                VALUES ($1, $2, TRUE, 'PRIVATE')
+                ON CONFLICT (extension, user_id) 
+                DO UPDATE SET is_default = TRUE;
+            """
+            
+            # Open a single high-speed transaction for the whole sync
             async with self.pool.acquire() as conn:
-                # Execute all relation building within a single atomic transaction
                 async with conn.transaction():
                     for ext in pbx_extensions:
                         ext_num = str(ext['extension'])
@@ -59,41 +88,14 @@ class PBXSynchronizer:
                         
                         is_human = self._is_human_name(raw_name)
                         device_type = 'STATIC_PRIVATE' if is_human else 'STATIC_SHARED'
-
+                        
                         await conn.execute(ep_query, ext_num, raw_name, device_type)
                         
-                        ep_query = """
-                            INSERT INTO Endpoints (extension, display_name, is_active, device_type)
-                            VALUES ($1, $2, TRUE, $3)
-                            ON CONFLICT (extension) 
-                            DO UPDATE SET 
-                                display_name = EXCLUDED.display_name, 
-                                is_active = TRUE, 
-                                device_type = EXCLUDED.device_type; 
-                        """
-                    
-                        # Only bootstrap the user/device mapping if it's an actual person
                         if is_human:
-                            user_query = """
-                                WITH new_user AS (
-                                    INSERT INTO Users (primary_name)
-                                    SELECT $1::varchar WHERE NOT EXISTS (SELECT 1 FROM Users WHERE primary_name = $1::varchar)
-                                    RETURNING id
-                                )
-                                SELECT id FROM new_user
-                                UNION ALL
-                                SELECT id FROM Users WHERE primary_name = $1::varchar LIMIT 1;
-                            """
-                            link_query = """
-                                INSERT INTO Endpoint_Users (extension, user_id, is_default, access_level)
-                                VALUES ($1, $2, TRUE, 'PRIVATE')
-                                ON CONFLICT (extension, user_id) 
-                                DO UPDATE SET is_default = TRUE;
-                            """
                             user_id = await conn.fetchval(user_query, raw_name)
                             if user_id:
                                 await conn.execute(link_query, ext_num, user_id)
-                            
+                                
                         active_extensions.append(ext_num)
 
             if active_extensions:
