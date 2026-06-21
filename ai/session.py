@@ -41,7 +41,8 @@ class CallSession:
 
         self.target_extension = caller_number
         endpoint_data = await self.db.endpoints.get_endpoint(caller_number)
-        memory_content = "No specific memory file exists yet."
+        
+        user_data = None
 
         if endpoint_data:
             default_user_id = endpoint_data.get('default_user_id')
@@ -49,21 +50,31 @@ class CallSession:
             if default_user_id:
                 self.active_user_id = default_user_id
                 self.active_user_level = endpoint_data.get('default_access_level', 'PRIVATE')
-                # FIX: Pass the exact user_id, not the name
-                memory_content = await self.db.users.get_user_memory(default_user_id, self.active_user_level)
+                
+                # Fetch raw user dictionary to satisfy the new ContextBuilder schema
+                query = "SELECT id, primary_name as name, public_memory, private_memory FROM Users WHERE id = $1"
+                async with self.db.pool.acquire() as conn:
+                    user_record = await conn.fetchrow(query, default_user_id)
+                    
+                if user_record:
+                    user_data = dict(user_record)
+                    # Enforce the dynamic device access level
+                    if self.active_user_level == 'BLOCKED':
+                        user_data['private_memory'] = "[ACCESS DENIED: Physical device restrictions prevent loading user memory.]"
+                    elif self.active_user_level != 'PRIVATE':
+                        user_data['private_memory'] = "[PRIVATE MEMORY REDACTED - UNVERIFIED DEVICE LOCATION]"
             else:
                 self.active_user_level = 0 
-                memory_content = await self.db.endpoints.get_extension_memory(caller_number)
         else:
             self.active_user_level = 0
-            memory_content = await self.db.endpoints.get_extension_memory(caller_number)
 
-        dynamic_prompt = ContextBuilder.build_system_instruction(
-            base_system_prompt=self.config.system_prompt, 
-            direction=direction, 
+        # Initialize the updated ContextBuilder class (reads base_prompt natively from config)
+        builder = ContextBuilder(self.config)
+        dynamic_prompt = builder.build_system_instruction(
+            direction=direction,
             caller_info=caller,
-            endpoint_data=endpoint_data,
-            memory_content=memory_content
+            user_data=user_data,
+            endpoint_data=endpoint_data
         )
 
         self.gemini_socket = GeminiSocket(
