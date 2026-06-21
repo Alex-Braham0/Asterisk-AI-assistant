@@ -22,15 +22,15 @@ class DBMemoryDaemon:
     async def connect(self):
         self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
 
-    def generate_new_profiles(self, pub_user_mem: str, priv_user_mem: str, endpoint_mem: str, call_data: str, device_type: str) -> dict:
+    async def generate_new_profiles(self, pub_user_mem: str, priv_user_mem: str, endpoint_mem: str, call_data: str, device_type: str) -> dict:
         prompt = f"""
 You are the intelligence layer managing long-term memory for an AI telephony assistant.
 Your objective is to extract facts from the call data and route them into the correct memory profiles.
 
 CRITICAL DIRECTIVES:
 1. PRIORITIZE EXPLICIT REQUESTS: Execute any explicit add/remove requests made by the live agent in the call data.
-2. ANTI-AMNESIA: Retain all existing facts from the CURRENT PROFILES unless explicitly told to remove them.
-3. CONTEXT EFFICIENCY (STRICT LIMIT): Keep each profile string under 75 words. Use bullet points or highly condensed telegraphic phrasing.
+2. ANTI-AMNESIA: Retain all existing facts from the CURRENT PROFILES unless explicitly told to remove them or if new data directly contradicts them.
+3. CONTEXT EFFICIENCY (STRICT LIMIT): You MUST keep each profile string under 75 words. Use bullet points or highly condensed telegraphic phrasing. Do not write full paragraphs. The system context window is strictly limited.
 4. TAXONOMY ROUTING:
     A. ENDPOINT PROFILE: Facts about the physical hardware, room, or location. (Current Device Type: {device_type})
     B. PUBLIC USER PROFILE: Non-sensitive, permanent facts (Name, language, general preferences).
@@ -52,7 +52,8 @@ INSTRUCTIONS:
 First, use the `reasoning_scratchpad` to evaluate the new facts and determine which profile they belong to based on the taxonomy above.
 Then, output the fully updated memory strings.
 """
-        response = self.client.models.generate_content(
+        # FIX 1: Use native async Gemini SDK to prevent event loop crashes
+        response = await self.client.aio.models.generate_content(
             model='gemini-3.1-flash-lite',
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -80,6 +81,7 @@ Then, output the fully updated memory strings.
             "transcript": key_exchanges
         }, indent=2)
 
+        # FIX 2: Fetch current memory from Markdown files (NOT the database)
         ep_file = f"./memory_files/endpoints/{extension}.md"
         ep_mem = "No specific memory data."
         if os.path.exists(ep_file):
@@ -98,15 +100,18 @@ Then, output the fully updated memory strings.
                 with open(priv_file, "r", encoding="utf-8") as f:
                     priv_mem = f.read()
 
+        # FIX 3: Briefly use DB to get device_type, then release connection immediately to prevent pool exhaustion
         device_type = "UNKNOWN" 
         async with self.db.pool.acquire() as conn:
             device_type_val = await conn.fetchval("SELECT device_type FROM Endpoints WHERE extension = $1", str(extension))
             if device_type_val: device_type = device_type_val
-            
-        new_profiles = await asyncio.to_thread(
-            self.generate_new_profiles, pub_mem, priv_mem, ep_mem, call_data_payload, device_type
+
+        # 4. Call LLM natively via async (Database connections are completely free during this 5-10 second wait)
+        new_profiles = await self.generate_new_profiles(
+            pub_mem, priv_mem, ep_mem, call_data_payload, device_type
         )
 
+        # 5. Write new memories back to Markdown files
         os.makedirs("./memory_files/endpoints", exist_ok=True)
         new_ep_mem = new_profiles.get("endpoint_profile", "").strip()
         if new_ep_mem and new_ep_mem != ep_mem and new_ep_mem.lower() not in ["", "none", "[]"]:
@@ -125,6 +130,7 @@ Then, output the fully updated memory strings.
                 with open(priv_file, "w", encoding="utf-8") as f:
                     f.write(new_priv)
 
+        # 6. Briefly use DB to mark task done
         await self._mark_task_done(task_id, 'completed')
         print(f"[MemoryDaemon] Successfully processed memory update for Ext {extension} to MD files.")
 
@@ -136,6 +142,7 @@ Then, output the fully updated memory strings.
         print("[Memory Daemon] Connected to DB. Scanning for synthesis tasks...")
         while True:
             try:
+                # Lock a pending task
                 query = """
                     UPDATE Tasks SET status = 'processing' 
                     WHERE id = (
