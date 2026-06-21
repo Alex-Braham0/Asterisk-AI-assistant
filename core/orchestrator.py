@@ -19,7 +19,7 @@ class SIPAgentOrchestrator:
         self.engine = MediaEngine(self.config, self.loop, self._handle_inbound_call)
         self.scheduler = BackgroundScheduler(self.config, self.db, self)
 
-        self.memory_daemon = DBMemoryDaemon(self.config, self.db.pool)
+        self.memory_daemon = DBMemoryDaemon(self.config, self.db)
 
     def start(self) -> None:
         print("\n--- Smart Singleton Swarm Online ---")

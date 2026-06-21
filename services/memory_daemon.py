@@ -14,10 +14,11 @@ class MemoryUpdate(BaseModel):
     endpoint_profile: str
 
 class DBMemoryDaemon:
-    def __init__(self, config, pool):
+    def __init__(self, config, db):
         self.config = config
         self.client = genai.Client(api_key=self.config.gemini_api_key)
-        self.pool = pool
+        self.db = db
+
     async def connect(self):
         self.pool = await asyncpg.create_pool(self.db_url, min_size=1, max_size=5)
 
@@ -79,7 +80,7 @@ Then, output the fully updated memory strings.
             "transcript": key_exchanges
         }, indent=2)
 
-        async with self.pool.acquire() as conn:
+        async with self.db.pool.acquire() as conn:
             # Fetch current memory
             ep_data = await conn.fetchrow("SELECT endpoint_memory, device_type FROM Endpoints WHERE extension = $1", str(extension))
             if not ep_data:
@@ -121,7 +122,7 @@ Then, output the fully updated memory strings.
             print(f"[MemoryDaemon] Successfully processed memory update for Ext {extension}")
 
     async def _mark_task_done(self, task_id: int, status: str):
-        async with self.pool.acquire() as conn:
+        async with self.db.pool.acquire() as conn:
             await conn.execute("UPDATE Tasks SET status = $1 WHERE id = $2", status, task_id)
 
     async def run(self):
@@ -136,7 +137,7 @@ Then, output the fully updated memory strings.
                         ORDER BY id ASC LIMIT 1 FOR UPDATE SKIP LOCKED
                     ) RETURNING id, payload;
                 """
-                async with self.pool.acquire() as conn:
+                async with self.db.pool.acquire() as conn:
                     task = await conn.fetchrow(query)
                 
                 if task:
