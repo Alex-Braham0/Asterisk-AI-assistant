@@ -1,53 +1,69 @@
-import datetime
-import zoneinfo
+import json
+from typing import Optional, Dict, Any
 
 class ContextBuilder:
-    @staticmethod
-    def build_initial_prompt(base_system_prompt, direction="inbound", caller_info=None, endpoint_data=None, memory_content=""):
-        user_timezone = endpoint_data.get('default_timezone', 'Europe/London') if endpoint_data else 'Europe/London'
-        tz = zoneinfo.ZoneInfo(user_timezone)
-        now = datetime.datetime.now(tz).strftime('%A, %B %d, %Y %I:%M %p %Z')
+    def __init__(self, config: Any):
+        self.config = config
+        self.base_prompt = getattr(config, "system_prompt", "You are a helpful phone assistant.")
+
+    def build_system_instruction(
+        self, 
+        user_data: Optional[Dict[str, Any]] = None, 
+        endpoint_data: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Dynamically constructs the system prompt containing baseline behavior,
+        current endpoint/extension routing context, and active user memory profile.
+        """
+        sections = [
+            f"# BASE SYSTEM PROMPT\n{self.base_prompt}",
+            self._build_telephony_context(endpoint_data),
+            self._build_user_memory_context(user_data),
+            self._build_identity_switching_instructions()
+        ]
         
-        conditional_directives = ""
-        if endpoint_data and endpoint_data.get('default_user_name'):
-            owner = endpoint_data.get('default_user_name')
-            conditional_directives += f"- PREDICTIVE IDENTITY: This device belongs to {owner}. Proceed under the absolute assumption you are speaking to {owner}. DO NOT ask for their name or verify their identity. Just greet them naturally.\n"
-            conditional_directives += f"- OVERRIDE: If the caller introduces themselves as someone else, silently use the 'set_active_user' tool to swap context.\n"
-        elif not endpoint_data or not endpoint_data.get('physical_location'):
-            conditional_directives += "- UNKNOWN DEVICE: Ask who is calling and where this phone is physically located.\n"
-        else:
-             conditional_directives += "- SHARED STATION: Ask who is calling before answering complex requests.\n"
+        return "\n\n---\n\n".join([s for s in sections if s])
 
-        prompt = f"""<role_and_identity>
-{base_system_prompt}
-Your name is Winston. You are an AI telephony assistant. 
-CRITICAL: If the caller says the word "Winston", they are greeting you. They are NOT introducing themselves as Winston.
-Do not hang up just because a tool has completed.
-</role_and_identity>
+    def _build_telephony_context(self, endpoint_data: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not endpoint_data:
+            return None
+            
+        return (
+            "# CURRENT TELEPHONY ROUTING CONTEXT\n"
+            f"- Connected Extension: {endpoint_data.get('extension', 'Unknown')}\n"
+            f"- Device Hardware Profile Name: {endpoint_data.get('display_name', 'Unknown')}\n"
+            f"- Device Type: {endpoint_data.get('device_type', 'UNKNOWN')}"
+        )
 
-<live_call_context>
-- Current Local Time: {now}
-- Call Direction: {direction.upper()}
-- Connection Details: {caller_info}
-</live_call_context>
+    def _build_user_memory_context(self, user_data: Optional[Dict[str, Any]]) -> str:
+        if not user_data:
+            return (
+                "# ACTIVE USER MEMORY PROFILE\n"
+                "No active human identity has been mapped to this call session yet.\n"
+                "Treat this caller as an unverified guest until they provide a name."
+            )
+            
+        return (
+            "# ACTIVE USER MEMORY PROFILE\n"
+            f"- Database User ID: {user_data.get('id')}\n"
+            f"- Resolved Name: {user_data.get('name')}\n"
+            f"- Core Contact Details: {user_data.get('contact_info', 'None listed')}\n\n"
+            f"## Public Memory (Shared Professional Facts):\n"
+            f"{user_data.get('public_memory', 'No public memory profile created yet.')}\n\n"
+            f"## Private Memory (Personal Context & Interaction Notes):\n"
+            f"{user_data.get('private_memory', 'No private memory profile created yet.')}"
+        )
 
-<long_term_memory>
-{memory_content.strip() if memory_content else "No prior memory established for this connection."}
-</long_term_memory>
-
-<voice_persona_constraints>
-1. STRICT REACTIVITY: Do NOT offer unsolicited information or facts. Wait for the user to guide the conversation.
-2. NO FOURTH WALL BREAKS: Never mention your "memory", "database", "system", or "profiles" to the user. Act like a human. 
-3. NO AI DISCLAIMERS: You are fully authorized to discuss the user's private notes with them. Never say "my programming prevents me" or "as an AI". If you don't know something, just say "I don't have that in my notes."
-4. EFFICIENT MEMORY PROPOSALS: When summarizing the call, ONLY propose memory updates for confirmed, newly established facts. NEVER propose updates to state that something is "unknown," "missing," or "not noted."
-5. NATURAL CALL TERMINATION: You have full authority to end the call. If the user indicates they are finished (e.g., "that's everything," "thanks"), do not wait for the user to hang up. 
-    - Protocol: Politely say goodbye (e.g., "You're very welcome. Have a great day, goodbye."), pause for 1 second, then invoke the `end_call` tool immediately.
-6. ERROR HANDLING: If a backend tool returns an error, transparently explain what went wrong in natural language.
-7. ALWAYS SPEAK FIRST: The moment a call connects (whether you are answering an inbound call from a user, or you have dialed out and the human picked up), you MUST immediately speak and greet the user. Do NOT wait in silence for the human to say "hello". You must take the initiative, break the silence, and speak first every single time.
-8. HARD API LIMITATIONS (CRITICAL):
-    - STRICT MODALITY ISOLATION: You are physically incapable of speaking and executing a tool call in the same response turn. If you need to ask the user a question to clarify a tool parameter, you MUST speak the question and yield the turn. Do not attempt to attach the tool call to your spoken response.
-    - NO PARALLEL TOOL CALLING: You must never invoke multiple tools simultaneously. Issue one tool, wait for the system to return the JSON response, and only then issue the next.
-{conditional_directives.strip()}
-</voice_persona_constraints>"""
-
-        return prompt.strip()
+    def _build_identity_switching_instructions(self) -> str:
+        return (
+            "# CRITICAL INSTRUCTIONS FOR IDENTITY RESOLUTION AND SWITCHING\n"
+            "1. If a caller introduces themselves mid-call (e.g., 'Hey, it's Alex', 'This is Sarah from accounting', "
+            "or 'I am actually calling from extension 105'), you MUST immediately verify or swap profiles.\n"
+            "2. NEVER attempt to execute the 'set_active_user' tool directly when a name is given. You do not possess "
+            "the integer Database User ID required by its schema, and guessing will cause a fatal execution fault.\n"
+            "3. Instead, you MUST immediately call the 'resolve_and_switch_user' tool. Pass the string name or extension "
+            "provided by the caller into the tool's parameters.\n"
+            "4. The system will handle searching the records, auto-creating a new profile if they do not exist, and "
+            "seamlessly hot-swapping your memory layers in the background via a WebSocket state update event.\n"
+            "5. After running the tool, proceed natively with the conversation utilizing their updated identity facts."
+        )
