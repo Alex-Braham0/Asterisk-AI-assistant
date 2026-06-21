@@ -51,6 +51,7 @@ class TaskRepository:
             json.dump(data, f, indent=4)
 
     async def spool_call_summary(self, extension: str, summary_data: dict) -> None:
-        filename = f"{extension}_{int(time.time())}.json"
-        filepath = os.path.join(self.spool_pending, filename)
-        await asyncio.to_thread(self._write_spool_file, filepath, summary_data)
+        payload = json.dumps(summary_data)
+        query = "INSERT INTO Tasks (task_type, payload, scheduled_time, status) VALUES ($1, $2, CURRENT_TIMESTAMP, 'pending')"
+        async with self.pool.acquire() as conn:
+            await conn.execute(query, 'memory_synthesis', payload)
