@@ -59,12 +59,8 @@ async def run_database_migrations(conn: asyncpg.Connection) -> None:
     ALTER TABLE Endpoints ADD COLUMN IF NOT EXISTS device_type VARCHAR(50) DEFAULT 'STATIC_SHARED';
     ALTER TABLE Endpoints ADD COLUMN IF NOT EXISTS physical_location VARCHAR(255);
     ALTER TABLE Endpoint_Users ADD COLUMN IF NOT EXISTS access_level VARCHAR(50) DEFAULT 'SHARED_ONLY';
-<<<<<<< HEAD
     ALTER TABLE Users ADD COLUMN IF NOT EXISTS public_memory TEXT DEFAULT 'No existing memory profile.';
     ALTER TABLE Users ADD COLUMN IF NOT EXISTS private_memory TEXT DEFAULT 'No existing memory profile.';
     ALTER TABLE Endpoints ADD COLUMN IF NOT EXISTS endpoint_memory TEXT DEFAULT 'No specific memory data.';
-=======
-    ALTER TABLE Autonomous_Missions ADD COLUMN IF NOT EXISTS final_report TEXT; -- NEW
->>>>>>> feature/local-dashboard
     """
     await conn.execute(migration_patches)
