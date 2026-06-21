@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import logging
+import datetime
 from aiohttp import web, WSMsgType
 from collections import deque
 from pathlib import Path
@@ -36,12 +37,16 @@ class DashboardServer:
         app.router.add_get('/api/memory/{type}/{item_id}', self.get_memory)
         app.router.add_put('/api/memory/{type}/{item_id}', self.update_memory)
         
-        # New Diagnostics and Management Routes
         app.router.add_get('/api/system/health', self.get_system_health)
         app.router.add_post('/api/system/recover', self.recover_missions)
         app.router.add_post('/api/system/restart_telephony', self.restart_telephony)
         app.router.add_post('/api/missions/preview', self.preview_mission)
-        app.router.add_get('/api/system/usermap', self.get_usermap)
+        
+        # New Routing Editor Endpoints
+        app.router.add_get('/api/system/users', self.get_users_list)
+        app.router.add_get('/api/system/endpoints', self.get_endpoints_list)
+        app.router.add_get('/api/system/assignments/{user_id}', self.get_user_assignments)
+        app.router.add_post('/api/system/assignments/{user_id}', self.update_user_assignments)
 
         static_dir = os.path.join(os.path.dirname(__file__), 'static')
         async def index_handler(request):
@@ -90,7 +95,15 @@ class DashboardServer:
     async def get_missions(self, request):
         async with self.db.pool.acquire() as conn:
             records = await conn.fetch("SELECT * FROM Autonomous_Missions ORDER BY run_at_utc DESC")
-            return web.json_response([{**dict(r), 'run_at_utc': str(r['run_at_utc'])} for r in records])
+            results = []
+            for r in records:
+                d = dict(r)
+                # Safely convert all datetime objects (like run_at_utc and created_at) to strings
+                for k, v in d.items():
+                    if isinstance(v, datetime.datetime):
+                        d[k] = str(v)
+                results.append(d)
+            return web.json_response(results)
 
     async def update_mission(self, request):
         m_id = int(request.match_info['id'])
@@ -152,7 +165,6 @@ class DashboardServer:
         def blocking_restart():
             engine.stop()
             engine.start()
-        # Prevent the blocking process.wait() and time.sleep() from freezing the web loop
         await asyncio.to_thread(blocking_restart)
         return web.json_response({"status": "success"})
 
@@ -188,17 +200,39 @@ You are executing this on behalf of User ID: {owner_id}.
 </strict_directives>"""
         return web.json_response({"prompt": prompt})
 
-    async def get_usermap(self, request):
-        query = """
-            SELECT u.id as user_id, u.primary_name, e.extension, e.display_name, e.device_type, eu.is_default
-            FROM Users u
-            LEFT JOIN Endpoint_Users eu ON u.id = eu.user_id
-            LEFT JOIN Endpoints e ON eu.extension = e.extension
-            ORDER BY u.primary_name;
-        """
+    # --- Routing Editor Endpoints ---
+    async def get_users_list(self, request):
         async with self.db.pool.acquire() as conn:
-            records = await conn.fetch(query)
+            records = await conn.fetch("SELECT id, primary_name FROM Users ORDER BY primary_name")
             return web.json_response([dict(r) for r in records])
+
+    async def get_endpoints_list(self, request):
+        async with self.db.pool.acquire() as conn:
+            records = await conn.fetch("SELECT extension, display_name, device_type FROM Endpoints ORDER BY extension")
+            return web.json_response([dict(r) for r in records])
+
+    async def get_user_assignments(self, request):
+        user_id = int(request.match_info['user_id'])
+        async with self.db.pool.acquire() as conn:
+            records = await conn.fetch("SELECT extension, is_default FROM Endpoint_Users WHERE user_id = $1", user_id)
+            return web.json_response([dict(r) for r in records])
+
+    async def update_user_assignments(self, request):
+        user_id = int(request.match_info['user_id'])
+        data = await request.json()
+        assignments = data.get('assignments', [])
+        
+        async with self.db.pool.acquire() as conn:
+            async with conn.transaction():
+                # Clear existing relationships for this specific user
+                await conn.execute("DELETE FROM Endpoint_Users WHERE user_id = $1", user_id)
+                # Insert the new mapped extensions
+                for a in assignments:
+                    await conn.execute(
+                        "INSERT INTO Endpoint_Users (extension, user_id, is_default, access_level) VALUES ($1, $2, $3, 'PRIVATE')",
+                        a['extension'], user_id, a['is_default']
+                    )
+        return web.json_response({"status": "success"})
 
 async def start_dashboard(orchestrator, db, host="0.0.0.0", port=8080):
     server = DashboardServer(orchestrator, db)

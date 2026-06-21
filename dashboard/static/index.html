@@ -29,6 +29,11 @@
         
         .health-stat { font-size: 1.5rem; font-weight: bold; }
         pre.preview-code { background: #0c0c0c; padding: 15px; border-radius: 5px; border: 1px solid #333; color: #d4d4d4; max-height: 500px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;}
+        
+        /* Routing Editor Styles */
+        .user-list-item { cursor: pointer; transition: background-color 0.2s; border-color: #333; }
+        .user-list-item:hover { background-color: #2a2a2a; }
+        .user-list-item.active { background-color: #0d6efd; border-color: #0d6efd; }
     </style>
 </head>
 <body>
@@ -162,12 +167,38 @@
             </div>
             
             <div class="card">
-                <div class="card-header">Physical Routing Map (Read-Only)</div>
-                <div class="card-body p-0">
-                    <table class="table table-dark table-sm m-0 table-striped">
-                        <thead><tr><th>User Name</th><th>Extension</th><th>Device Name</th><th>Device Type</th><th>Default Target</th></tr></thead>
-                        <tbody id="user-map-table"></tbody>
-                    </table>
+                <div class="card-header">Hardware & Endpoint Routing Editor</div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3 border-end border-secondary pe-3">
+                            <label class="text-muted small mb-2">Select User</label>
+                            <div class="list-group bg-dark" id="routing-users-list">
+                                </div>
+                        </div>
+                        <div class="col-md-9 ps-3">
+                            <label class="text-muted small mb-2">Assign Telephony Endpoints</label>
+                            <div class="alert alert-secondary bg-dark border-secondary text-light py-2" id="routing-prompt" style="display: block;">
+                                Select a user from the left to map their physical devices.
+                            </div>
+                            <div id="routing-editor-panel" style="display: none;">
+                                <table class="table table-dark table-sm m-0 table-striped border border-secondary rounded overflow-hidden">
+                                    <thead><tr>
+                                        <th class="text-center" style="width: 80px;">Assigned</th>
+                                        <th>Extension</th>
+                                        <th>Display Name</th>
+                                        <th>Device Type</th>
+                                        <th class="text-center" style="width: 100px;">Default Target</th>
+                                    </tr></thead>
+                                    <tbody id="routing-endpoints-table">
+                                        </tbody>
+                                </table>
+                                <div class="mt-3 d-flex align-items-center">
+                                    <button class="btn btn-success px-4" onclick="saveRoutingAssignments()">Save Routing Changes</button>
+                                    <span id="routingSaveStatus" class="ms-3 text-success fw-bold" style="display:none;">✓ Routing Updated</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -194,6 +225,8 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let missionsData = [];
+        let globalEndpoints = [];
+        let currentRoutingUserId = null;
 
         function switchTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
@@ -205,7 +238,7 @@
             if(tabId === 'missions') loadMissions();
             if(tabId === 'memory') {
                 if(document.getElementById('memItem').options.length === 0) loadMemoryList();
-                loadUserMap();
+                loadRoutingEditor();
             }
         }
 
@@ -233,7 +266,6 @@
                     callCard.style.display = 'none';
                 }
                 
-                // Fetch System Health Data
                 const healthRes = await fetch('/api/system/health');
                 const hData = await healthRes.json();
                 
@@ -408,23 +440,103 @@
             setTimeout(() => status.style.display = 'none', 2500);
         }
 
-        async function loadUserMap() {
-            const res = await fetch('/api/system/usermap');
-            const mapData = await res.json();
-            const tbody = document.getElementById('user-map-table');
+        // --- Routing Editor Tab ---
+        async function loadRoutingEditor() {
+            // Load base lists once
+            const uRes = await fetch('/api/system/users');
+            const users = await uRes.json();
+            const listEl = document.getElementById('routing-users-list');
+            listEl.innerHTML = '';
+            users.forEach(u => {
+                listEl.innerHTML += `<button type="button" class="list-group-item list-group-item-action bg-dark text-light user-list-item" onclick="selectRoutingUser(${u.id}, this)">${u.primary_name}</button>`;
+            });
+
+            const eRes = await fetch('/api/system/endpoints');
+            globalEndpoints = await eRes.json();
+        }
+
+        async function selectRoutingUser(userId, element) {
+            currentRoutingUserId = userId;
+            
+            document.querySelectorAll('.user-list-item').forEach(el => el.classList.remove('active'));
+            element.classList.add('active');
+            
+            document.getElementById('routing-prompt').style.display = 'none';
+            document.getElementById('routing-editor-panel').style.display = 'block';
+            
+            // Fetch assignments for this user
+            const aRes = await fetch(`/api/system/assignments/${userId}`);
+            const assignments = await aRes.json();
+            
+            // Build map of assigned extensions for quick lookup
+            const assignedMap = {};
+            assignments.forEach(a => assignedMap[a.extension] = a.is_default);
+            
+            const tbody = document.getElementById('routing-endpoints-table');
             tbody.innerHTML = '';
             
-            mapData.forEach(row => {
-                const isDefault = row.is_default ? '<span class="text-success fw-bold">✓ Yes</span>' : '<span class="text-muted">No</span>';
+            globalEndpoints.forEach(ep => {
+                const isAssigned = assignedMap.hasOwnProperty(ep.extension);
+                const isDefault = isAssigned && assignedMap[ep.extension];
+                
                 tbody.innerHTML += `
                     <tr>
-                        <td>${row.primary_name || '-'}</td>
-                        <td class="text-info">${row.extension || '-'}</td>
-                        <td>${row.display_name || '-'}</td>
-                        <td>${row.device_type || '-'}</td>
-                        <td>${isDefault}</td>
-                    </tr>`;
+                        <td class="text-center align-middle">
+                            <input class="form-check-input assign-checkbox" type="checkbox" value="${ep.extension}" ${isAssigned ? 'checked' : ''} onchange="handleAssignChange('${ep.extension}')">
+                        </td>
+                        <td class="text-info fw-bold align-middle">${ep.extension}</td>
+                        <td class="align-middle">${ep.display_name}</td>
+                        <td class="align-middle text-muted">${ep.device_type}</td>
+                        <td class="text-center align-middle">
+                            <input class="form-check-input default-radio" type="radio" name="defaultExt" value="${ep.extension}" ${isDefault ? 'checked' : ''} ${!isAssigned ? 'disabled' : ''}>
+                        </td>
+                    </tr>
+                `;
             });
+        }
+        
+        function handleAssignChange(extension) {
+            // Enable/disable the corresponding radio button based on the checkbox state
+            const radio = document.querySelector(`input.default-radio[value="${extension}"]`);
+            const checkbox = document.querySelector(`input.assign-checkbox[value="${extension}"]`);
+            if (checkbox.checked) {
+                radio.disabled = false;
+                // If it's the only one checked, make it default automatically
+                const checkedRadios = document.querySelectorAll('input.default-radio:not(:disabled)');
+                if (checkedRadios.length === 1) radio.checked = true;
+            } else {
+                radio.disabled = true;
+                if (radio.checked) {
+                    radio.checked = false;
+                    // Try to default to the next available assigned phone
+                    const firstAvailable = document.querySelector('input.default-radio:not(:disabled)');
+                    if(firstAvailable) firstAvailable.checked = true;
+                }
+            }
+        }
+
+        async function saveRoutingAssignments() {
+            if(!currentRoutingUserId) return;
+            
+            const assignments = [];
+            const checkboxes = document.querySelectorAll('.assign-checkbox:checked');
+            const defaultRadioVal = document.querySelector('input[name="defaultExt"]:checked')?.value;
+            
+            checkboxes.forEach(cb => {
+                assignments.push({
+                    extension: cb.value,
+                    is_default: cb.value === defaultRadioVal
+                });
+            });
+            
+            await fetch(`/api/system/assignments/${currentRoutingUserId}`, {
+                method: 'POST',
+                body: JSON.stringify({ assignments: assignments })
+            });
+            
+            const status = document.getElementById('routingSaveStatus');
+            status.style.display = 'inline-block';
+            setTimeout(() => status.style.display = 'none', 2500);
         }
     </script>
 </body>
