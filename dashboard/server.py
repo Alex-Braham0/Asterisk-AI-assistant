@@ -33,18 +33,25 @@ class DashboardServer:
         app.router.add_get('/api/calls', self.get_past_calls)
         app.router.add_get('/api/missions', self.get_missions)
         app.router.add_put('/api/missions/{id}', self.update_mission)
-        app.router.add_get('/api/memory/{type}', self.list_memory)
+        
+        # Memory Routes
         app.router.add_get('/api/memory/{type}/{item_id}', self.get_memory)
         app.router.add_put('/api/memory/{type}/{item_id}', self.update_memory)
         
+        # Diagnostics
         app.router.add_get('/api/system/health', self.get_system_health)
         app.router.add_post('/api/system/recover', self.recover_missions)
         app.router.add_post('/api/system/restart_telephony', self.restart_telephony)
         app.router.add_post('/api/missions/preview', self.preview_mission)
         
-        # New Routing Editor Endpoints
+        # User & Endpoint Management Routes
         app.router.add_get('/api/system/users', self.get_users_list)
+        app.router.add_post('/api/system/users', self.create_user)
+        app.router.add_delete('/api/system/users/{user_id}', self.delete_user)
+        
         app.router.add_get('/api/system/endpoints', self.get_endpoints_list)
+        app.router.add_put('/api/system/endpoints/{extension}', self.update_endpoint)
+        
         app.router.add_get('/api/system/assignments/{user_id}', self.get_user_assignments)
         app.router.add_post('/api/system/assignments/{user_id}', self.update_user_assignments)
 
@@ -98,7 +105,6 @@ class DashboardServer:
             results = []
             for r in records:
                 d = dict(r)
-                # Safely convert all datetime objects (like run_at_utc and created_at) to strings
                 for k, v in d.items():
                     if isinstance(v, datetime.datetime):
                         d[k] = str(v)
@@ -111,21 +117,6 @@ class DashboardServer:
         async with self.db.pool.acquire() as conn:
             await conn.execute("UPDATE Autonomous_Missions SET mission_directive = $1 WHERE id = $2", data['directive'], m_id)
         return web.json_response({"status": "success"})
-
-    async def list_memory(self, request):
-        mem_type = request.match_info['type']
-        items = []
-        async with self.db.pool.acquire() as conn:
-            if mem_type == "endpoints":
-                records = await conn.fetch("SELECT extension, display_name FROM Endpoints ORDER BY extension")
-                for r in records:
-                    items.append({"id": str(r["extension"]), "display": f"{r['extension']} - {r['display_name']}"})
-            elif mem_type == "users":
-                records = await conn.fetch("SELECT id, primary_name FROM Users ORDER BY primary_name")
-                for r in records:
-                    items.append({"id": f"{r['id']}_public", "display": f"{r['primary_name']} (Public)"})
-                    items.append({"id": f"{r['id']}_private", "display": f"{r['primary_name']} (Private)"})
-        return web.json_response(items)
 
     async def get_memory(self, request):
         file_path = self.base_dir / f"memory_files/{request.match_info['type']}/{request.match_info['item_id']}.md"
@@ -200,16 +191,50 @@ You are executing this on behalf of User ID: {owner_id}.
 </strict_directives>"""
         return web.json_response({"prompt": prompt})
 
-    # --- Routing Editor Endpoints ---
+    # --- User & Endpoint Management Routes ---
     async def get_users_list(self, request):
         async with self.db.pool.acquire() as conn:
             records = await conn.fetch("SELECT id, primary_name FROM Users ORDER BY primary_name")
             return web.json_response([dict(r) for r in records])
 
+    async def create_user(self, request):
+        data = await request.json()
+        name = data.get('primary_name', '').strip()
+        if not name: return web.json_response({"error": "Name required"}, status=400)
+        async with self.db.pool.acquire() as conn:
+            new_id = await conn.fetchval("INSERT INTO Users (primary_name) VALUES ($1) RETURNING id", name)
+        return web.json_response({"status": "success", "id": new_id})
+
+    async def delete_user(self, request):
+        user_id = int(request.match_info['user_id'])
+        async with self.db.pool.acquire() as conn:
+            # Postgres CASCADE drops Endpoint_Users & orphaned missions based on schema
+            await conn.execute("DELETE FROM Users WHERE id = $1", user_id)
+        
+        # Clean up memory files
+        try:
+            pub_file = self.base_dir / f"memory_files/users/{user_id}_public.md"
+            priv_file = self.base_dir / f"memory_files/users/{user_id}_private.md"
+            if pub_file.exists(): os.remove(pub_file)
+            if priv_file.exists(): os.remove(priv_file)
+        except Exception: pass
+            
+        return web.json_response({"status": "success"})
+
     async def get_endpoints_list(self, request):
         async with self.db.pool.acquire() as conn:
             records = await conn.fetch("SELECT extension, display_name, device_type FROM Endpoints ORDER BY extension")
             return web.json_response([dict(r) for r in records])
+
+    async def update_endpoint(self, request):
+        ext = request.match_info['extension']
+        data = await request.json()
+        async with self.db.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE Endpoints SET display_name = $1, device_type = $2 WHERE extension = $3", 
+                data['display_name'], data['device_type'], ext
+            )
+        return web.json_response({"status": "success"})
 
     async def get_user_assignments(self, request):
         user_id = int(request.match_info['user_id'])
@@ -224,9 +249,7 @@ You are executing this on behalf of User ID: {owner_id}.
         
         async with self.db.pool.acquire() as conn:
             async with conn.transaction():
-                # Clear existing relationships for this specific user
                 await conn.execute("DELETE FROM Endpoint_Users WHERE user_id = $1", user_id)
-                # Insert the new mapped extensions
                 for a in assignments:
                     await conn.execute(
                         "INSERT INTO Endpoint_Users (extension, user_id, is_default, access_level) VALUES ($1, $2, $3, 'PRIVATE')",
