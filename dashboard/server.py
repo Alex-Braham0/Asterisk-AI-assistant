@@ -6,6 +6,7 @@ import datetime
 from aiohttp import web, WSMsgType
 from collections import deque
 from pathlib import Path
+from ai.context_builder import ContextBuilder
 
 log_ring_buffer = deque(maxlen=500)
 active_websockets = set()
@@ -167,28 +168,19 @@ class DashboardServer:
         if not owner_id:
             return web.json_response({"prompt": "Error: Missing owner ID."})
             
-        user_memory = await self.db.users.get_user_memory(owner_id, access_level="PRIVATE")
+        query = "SELECT id, primary_name as name, public_memory, private_memory FROM Users WHERE id = $1"
+        user_data = None
+        async with self.db.pool.acquire() as conn:
+            user_record = await conn.fetchrow(query, int(owner_id))
+            if user_record:
+                user_data = dict(user_record)
+                
+        builder = ContextBuilder(self.orchestrator.config)
+        prompt = builder.build_headless_instruction(
+            mission_directive=directive, 
+            user_data=user_data
+        )
         
-        prompt = f"""<role_and_identity>
-You are a headless, autonomous AI agent executing a background mission. You are NOT currently connected to an audio phone line. You must achieve your objective using your available tools.
-</role_and_identity>
-
-<mission_directive>
-{directive}
-</mission_directive>
-
-<user_context>
-You are executing this on behalf of User ID: {owner_id}.
-{user_memory}
-</user_context>
-
-<strict_directives>
-1. TRUST PROVIDED NUMBERS: If your mission explicitly includes a phone number (e.g., "extension 6"), use `execute_outbound_dial` immediately.
-2. ASYNCHRONOUS DIALING: The `execute_outbound_dial` tool will return immediately while the phone is ringing. You MUST wait silently. Do not generate any spoken text until you receive the "CALL CONNECTED" system event.
-3. THE CONVERSATION: When the call connects, you must converse naturally. Do not end the call immediately. 
-4. ENDING THE CALL: Once the conversation reaches a natural conclusion, YOU must invoke the `end_call` tool to hang up the line. 
-5. COMPLETING THE MISSION: Only AFTER `end_call` has successfully executed, or if the human hangs up on you (notified via system event), you must invoke the `mark_mission_complete` tool to terminate your background session.
-</strict_directives>"""
         return web.json_response({"prompt": prompt})
 
     # --- User & Endpoint Management Routes ---

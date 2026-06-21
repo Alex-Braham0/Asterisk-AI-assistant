@@ -58,7 +58,7 @@ class CallSession:
             self.active_user_level = 0
             memory_content = await self.db.endpoints.get_extension_memory(caller_number)
 
-        dynamic_prompt = ContextBuilder.build_initial_prompt(
+        dynamic_prompt = ContextBuilder.build_system_instruction(
             base_system_prompt=self.config.system_prompt, 
             direction=direction, 
             caller_info=caller,
@@ -195,31 +195,19 @@ class HeadlessAgentSession:
         self.target_extension = "HEADLESS_AGENT"
         self._background_tasks = set()
 
-    async def execute_mission(self):
-        user_memory = await self.db.users.get_user_memory(self.active_user_id, access_level="PRIVATE")
-        
-        # ai/session.py -> class HeadlessAgentSession -> execute_mission()
+    async def execute_mission(self):        
+        query = "SELECT id, primary_name as name, public_memory, private_memory FROM Users WHERE id = $1"
+        user_data = None
+        async with self.db.pool.acquire() as conn:
+            user_record = await conn.fetchrow(query, self.active_user_id)
+            if user_record:
+                user_data = dict(user_record)
 
-        system_prompt = f"""<role_and_identity>
-You are a headless, autonomous AI agent executing a background mission. You are NOT currently connected to an audio phone line. You must achieve your objective using your available tools.
-</role_and_identity>
-
-<mission_directive>
-{self.mission_data['mission_directive']}
-</mission_directive>
-
-<user_context>
-You are executing this on behalf of User ID: {self.active_user_id}.
-{user_memory}
-</user_context>
-
-<strict_directives>
-1. TRUST PROVIDED NUMBERS: If your mission explicitly includes a phone number (e.g., "extension 6"), use `execute_outbound_dial` immediately.
-2. ASYNCHRONOUS DIALING: The `execute_outbound_dial` tool will return immediately while the phone is ringing. You MUST wait silently. Do not generate any spoken text until you receive the "CALL CONNECTED" system event.
-3. THE CONVERSATION: When the call connects, you must converse naturally. Do not end the call immediately. 
-4. ENDING THE CALL: Once the conversation reaches a natural conclusion, YOU must invoke the `end_call` tool to hang up the line. 
-5. COMPLETING THE MISSION: Only AFTER `end_call` has successfully executed, or if the human hangs up on you (notified via system event), you must invoke the `mark_mission_complete` tool to terminate your background session.
-</strict_directives>"""
+        builder = ContextBuilder(self.config)
+        system_prompt = builder.build_headless_instruction(
+            mission_directive=self.mission_data['mission_directive'],
+            user_data=user_data
+        )
 
         dummy_queue = asyncio.Queue()
         self.gemini_socket = GeminiSocket(
