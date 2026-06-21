@@ -41,21 +41,23 @@ class MediaEngine:
             raise RuntimeError(f"FATAL: PulseAudio cable allocation failed.\nTx Error: {tx_result.stderr}\nRx Error: {rx_result.stderr}")
 
     def start(self):
-        self._init_virtual_cables()
         print("[MediaEngine] Booting Singleton Baresip Engine...")
         
-        # Inject the INVERSE routing into the Baresip process
+        # Baresip receives the inverse of the global routing
         env = os.environ.copy()
-        env["PULSE_SINK"] = self.rx_sink            
-        env["PULSE_SOURCE"] = f"{self.tx_sink}.monitor"  
+        pid = os.getpid()
+        env["PULSE_SINK"] = f"Baresip_Rx_{pid}"
+        env["PULSE_SOURCE"] = f"Baresip_Tx_{pid}.monitor"
 
         cmd = ["baresip"]
         self.baresip_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        self.main_loop.create_task(self._baresip_watchdog())
+        if hasattr(self, '_baresip_watchdog'):
+            self.main_loop.create_task(self._baresip_watchdog())
         
         import time
-        time.sleep(1)
+        # Increased to 2s to guarantee Baresip's TCP control socket is listening
+        time.sleep(2) 
         self.ctrl.start()
 
     async def _baresip_watchdog(self):

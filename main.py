@@ -1,9 +1,30 @@
 import os
 import sys
+import subprocess
+import atexit
 
 APP_PID = os.getpid()
-os.environ["PULSE_SINK"] = f"Baresip_Tx_{APP_PID}"
-os.environ["PULSE_SOURCE"] = f"Baresip_Rx_{APP_PID}.monitor"
+TX_SINK = f"Baresip_Tx_{APP_PID}"
+RX_SINK = f"Baresip_Rx_{APP_PID}"
+
+print(f"[System] Provisioning hardware virtual cables for PID {APP_PID}...")
+
+# 1. Purge any orphaned sinks from previous crashes
+subprocess.run(f"pactl list short modules | grep Baresip_ | cut -f1 | xargs -r pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
+
+# 2. Force OS-level creation of the PulseAudio sinks
+subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={TX_SINK}", f"sink_properties=device.description={TX_SINK}"], check=True, stdout=subprocess.DEVNULL)
+subprocess.run(["pactl", "load-module", "module-null-sink", f"sink_name={RX_SINK}", f"sink_properties=device.description={RX_SINK}"], check=True, stdout=subprocess.DEVNULL)
+
+# 3. Bind Python's global C-libraries to the new cables
+os.environ["PULSE_SINK"] = TX_SINK
+os.environ["PULSE_SOURCE"] = f"{RX_SINK}.monitor"
+
+# 4. Guarantee cleanup on exit or systemd SIGTERM
+def cleanup_cables():
+    subprocess.run(f"pactl list short modules | grep {APP_PID} | cut -f1 | xargs -r pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
+
+atexit.register(cleanup_cables)
 
 import asyncio
 from config.settings import AppSettings
