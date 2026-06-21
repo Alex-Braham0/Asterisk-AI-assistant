@@ -59,5 +59,6 @@ async def run_database_migrations(conn: asyncpg.Connection) -> None:
     ALTER TABLE Endpoints ADD COLUMN IF NOT EXISTS device_type VARCHAR(50) DEFAULT 'STATIC_SHARED';
     ALTER TABLE Endpoints ADD COLUMN IF NOT EXISTS physical_location VARCHAR(255);
     ALTER TABLE Endpoint_Users ADD COLUMN IF NOT EXISTS access_level VARCHAR(50) DEFAULT 'SHARED_ONLY';
+    ALTER TABLE Autonomous_Missions ADD COLUMN IF NOT EXISTS final_report TEXT; -- NEW
     """
     await conn.execute(migration_patches)

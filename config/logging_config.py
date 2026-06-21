@@ -1,6 +1,7 @@
 import logging
 import sys
 from logging.handlers import MemoryHandler
+from dashboard.server import DashboardLogHandler
 
 # 1. Create a custom handler that ruthlessly ignores buffer capacity
 class CrashOnlyMemoryHandler(MemoryHandler):
@@ -53,6 +54,11 @@ def setup_logging(level: str = "INFO") -> None:
     console_handler.setFormatter(formatter)
 
     root_logger.addHandler(console_handler)
+
+    dash_handler = DashboardLogHandler()
+    dash_handler.setFormatter(formatter)
+    dash_handler.setLevel(level.upper())
+    root_logger.addHandler(dash_handler)
 
     # Prevent massive debug floods coming from low-level network components
     logging.getLogger("websockets").setLevel(logging.WARNING)

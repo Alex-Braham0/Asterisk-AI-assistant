@@ -10,14 +10,17 @@ from config.logging_config import setup_logging
 from db.connection import DatabaseConnection
 from core.orchestrator import SIPAgentOrchestrator
 from services.pbx_sync import PBXSynchronizer
+from dashboard.server import start_dashboard
 
-async def init_system(config: AppSettings, db: DatabaseConnection):
+async def init_system(config: AppSettings, db: DatabaseConnection, orchestrator: SIPAgentOrchestrator):
     print("[System] Initializing Database Connections...")
     await db.connect()
     
     print("[System] Synchronizing FreePBX Directory Data...")
     synchronizer = PBXSynchronizer(config, db.pool)
     await synchronizer.run_sync()
+
+    asyncio.create_task(start_dashboard(orchestrator, db))
 
 def main():
     setup_logging(level="INFO")
@@ -33,11 +36,11 @@ def main():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    # Run async setup tasks prior to booting the media engine loop
-    loop.run_until_complete(init_system(config, db))
-    
-    # Initialize the core task scheduler and RTP handler
     orchestrator = SIPAgentOrchestrator(config, db, loop)
+
+    # Run async setup tasks prior to booting the media engine loop
+    loop.run_until_complete(init_system(config, db, orchestrator))
+    
     orchestrator.start()
 
 if __name__ == "__main__":
