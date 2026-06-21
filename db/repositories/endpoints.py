@@ -1,4 +1,5 @@
 import os
+import json
 import asyncio
 import asyncpg
 
@@ -27,15 +28,27 @@ class EndpointRepository:
     async def get_endpoint(self, extension: str) -> dict | None:
         query = """
             SELECT e.extension, e.display_name, e.device_type, e.physical_location, e.default_timezone,
-                   eu.user_id as default_user_id, eu.access_level as default_access_level, u.primary_name as default_user_name
+                   eu_default.user_id as default_user_id, eu_default.access_level as default_access_level, u_default.primary_name as default_user_name,
+                   (SELECT json_agg(u.primary_name)
+                    FROM Endpoint_Users eu
+                    JOIN Users u ON eu.user_id = u.id
+                    WHERE eu.extension = e.extension) as associated_users
             FROM Endpoints e
-            LEFT JOIN Endpoint_Users eu ON e.extension = eu.extension AND eu.is_default = TRUE
-            LEFT JOIN Users u ON eu.user_id = u.id
+            LEFT JOIN Endpoint_Users eu_default ON e.extension = eu_default.extension AND eu_default.is_default = TRUE
+            LEFT JOIN Users u_default ON eu_default.user_id = u_default.id
             WHERE e.extension = $1
         """
         async with self.pool.acquire() as conn:
             record = await conn.fetchrow(query, str(extension))
-            return dict(record) if record else None
+            if record:
+                result = dict(record)
+                assoc_users_raw = result.get('associated_users')
+                if assoc_users_raw:
+                    result['associated_users'] = json.loads(assoc_users_raw) if isinstance(assoc_users_raw, str) else assoc_users_raw
+                else:
+                    result['associated_users'] = []
+                return result
+            return None
 
     async def get_dynamic_access_level(self, extension: str, user_id: int) -> str:
         query = "SELECT access_level FROM Endpoint_Users WHERE extension = $1 AND user_id = $2"
@@ -62,7 +75,6 @@ class EndpointRepository:
             return val or 'Europe/London'
 
     async def upsert_endpoint_from_sync(self, extension: str, display_name: str) -> None:
-        # Critique 2 Fix: Strictly removes device_type and physical_location parameters from EXCLUDED modifications 
         query = """
             INSERT INTO Endpoints (extension, display_name, is_active)
             VALUES ($1, $2, TRUE)
@@ -75,8 +87,7 @@ class EndpointRepository:
             await conn.execute(query, str(extension), display_name)
 
     async def deactivate_missing_endpoints(self, active_extensions: list[str]) -> None:
-        if not active_extensions:
-            return
+        if not active_extensions: return
         query = "UPDATE Endpoints SET is_active = FALSE WHERE extension != ALL($1::varchar[])"
         async with self.pool.acquire() as conn:
             await conn.execute(query, active_extensions)

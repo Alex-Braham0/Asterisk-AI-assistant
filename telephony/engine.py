@@ -128,16 +128,28 @@ class MediaEngine:
         return self.ctrl.send_cmd("accept")
 
     def make_outbound_call(self, target_extension: str):
-        if self.active_call: return None
+        if self.active_call: 
+            self.drop_call()
+            import time
+            time.sleep(0.5)
+            
         generated_id = f"out-singleton-{int(time.time())}"
         self.active_call = BaresipCallInstance(target_extension, target_extension, generated_id)
-        if not self.ctrl.send_cmd("dial", str(target_extension)):
-            self.active_call = None
-            return None
+        
+        # FIX: Fire and forget via a background thread to prevent Baresip socket timeouts from gaslighting the AI
+        import threading
+        threading.Thread(target=self.ctrl.send_cmd, args=("dial", str(target_extension)), daemon=True).start()
+        
         return self.active_call
 
     def drop_call(self):
-        self.ctrl.send_cmd("hangup")
+        import threading
+        threading.Thread(target=self.ctrl.send_cmd, args=("hangup",), daemon=True).start()
+        
+        # Forcefully clear the engine lock instantly so subsequent headless agents don't get blocked
+        if self.active_call:
+            self.main_loop.call_soon_threadsafe(self.active_call.ended_event.set)
+            self.active_call = None
 
     def flush_tx_buffer(self):
         with self.tx_lock: self.tx_buffer.clear()
