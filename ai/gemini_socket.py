@@ -180,8 +180,8 @@ class GeminiSocket:
                         
                         asyncio.create_task(self.tool_handler_callback(call_id, func_name, func_args))
                         
-            except websockets.exceptions.ConnectionClosed:
-                self._log("[Gemini] WebSocket Closed by Server.")
+            except websockets.exceptions.ConnectionClosed as e:
+                self._log(f"[Gemini] WebSocket Closed by Server. Code: {e.code}, Reason: {e.reason}")
                 break
             except Exception as e:
                 self._log(f"[Gemini Downlink Error] {e}")

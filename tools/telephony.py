@@ -6,10 +6,10 @@ class TransferCall(BaseTool):
     description = "Transfers the current call to another extension. Use this when the user asks to speak to a human."
     auth_level = 0
     parameters = {
-        "type": "object",
+        "type": "OBJECT",
         "properties": {
-            "target_extension": {"type": "string"},
-            "reason": {"type": "string"}
+            "target_extension": {"type": "STRING"},
+            "reason": {"type": "STRING"}
         },
         "required": ["target_extension"]
     }
@@ -29,9 +29,9 @@ class SendDTMF(BaseTool):
     description = "Presses a key on the phone's dialpad."
     auth_level = 10
     parameters = {
-        "type": "object",
+        "type": "OBJECT",
         "properties": {
-            "digit": {"type": "string"}
+            "digit": {"type": "STRING"}
         },
         "required": ["digit"]
     }
@@ -49,9 +49,9 @@ class EndCall(BaseTool):
     description = "Hangs up the phone. Use this when the conversation is completely finished."
     auth_level = 0
     parameters = {
-        "type": "object",
+        "type": "OBJECT",
         "properties": {
-            "reason": {"type": "string"}
+            "reason": {"type": "STRING"}
         }
     }
 
