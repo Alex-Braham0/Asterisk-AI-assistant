@@ -106,81 +106,68 @@ class ExecuteOutboundDial(BaseTool):
         if not call:
              return {"status": "failed", "message": "Failed to dial. Line may be stuck."}
              
-        try:
-            # --- PHASE 1: PRE-GENERATION CACHING ---
-            pregen_buffer = bytearray()
-            
-            def capture_audio(pcm_data):
-                pregen_buffer.extend(pcm_data)
-            
-            original_inject = session.gemini_socket.pbx_inject_callback
-            session.gemini_socket.pbx_inject_callback = capture_audio
-            
-            asyncio.create_task(
-                session.gemini_socket.send_system_event(
-                    "The phone is currently ringing. Generate your greeting NOW and speak it. "
-                    "Do not wait for the human to answer. Act as if they just picked up."
-                )
-            )
-            
-            await asyncio.wait_for(call.answered_event.wait(), timeout=30.0)
-            
-            # --- PHASE 2: CONNECTION ESTABLISHED ---
-            session.gemini_socket.pbx_inject_callback = session.engine.inject_audio
-            session.gemini_socket.pbx_flush_callback = session.engine.flush_tx_buffer
-            
-            if pregen_buffer:
-                session.engine.inject_audio(bytes(pregen_buffer))
-            
-            session.bridge_active = True
-            
-            async def bridge_uplink_audio():
-                # DYNAMIC DEAF PERIOD: Calculate exactly how long the greeting is (16,000 bytes per second)
-                # This protects the greeting from being VAD-flushed by SIP connection clicks or human breathing.
-                pregen_duration = len(pregen_buffer) / 16000.0
-                deaf_time = max(0.5, pregen_duration)
-                await asyncio.sleep(deaf_time) 
+        # --- THE FIX: ASYNCHRONOUS MONITORING ---
+        async def monitor_call():
+            try:
+                # 1. Wait for the human to answer
+                await asyncio.wait_for(call.answered_event.wait(), timeout=30.0)
                 
-                while not session.engine.pbx_to_ai_queue.empty():
-                    try:
-                        session.engine.pbx_to_ai_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    
-                while session.bridge_active:
-                    try:
-                        pcm = await asyncio.wait_for(session.engine.pbx_to_ai_queue.get(), timeout=1.0)
-                        await session.gemini_socket.pbx_to_ai_queue.put(pcm)
-                    except asyncio.TimeoutError:
-                        continue
-                    except Exception:
-                        break
+                # 2. Call Answered: Setup Audio Bridge
+                session.gemini_socket.pbx_inject_callback = session.engine.inject_audio
+                session.gemini_socket.pbx_flush_callback = session.engine.flush_tx_buffer
+                session.bridge_active = True
+                
+                async def bridge_uplink_audio():
+                    await asyncio.sleep(0.5) # SIP click deaf period
+                    while not session.engine.pbx_to_ai_queue.empty():
+                        try:
+                            session.engine.pbx_to_ai_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                            
+                    while session.bridge_active:
+                        try:
+                            pcm = await asyncio.wait_for(session.engine.pbx_to_ai_queue.get(), timeout=1.0)
+                            await session.gemini_socket.pbx_to_ai_queue.put(pcm)
+                        except asyncio.TimeoutError:
+                            continue
+                        except Exception:
+                            break
 
-            asyncio.create_task(bridge_uplink_audio())
-            
-            async def monitor_call_drop():
-                await call.ended_event.wait()
-                session.bridge_active = False 
+                asyncio.create_task(bridge_uplink_audio())
+
+                # 3. Notify the AI to speak NOW
                 if session.gemini_socket and session.gemini_socket.is_connected:
                     await session.gemini_socket.send_system_event(
-                        "The human has hung up the phone. The call is disconnected. "
-                        "You must now use the mark_mission_complete tool to report the outcome."
+                        "CALL CONNECTED! The human just answered the phone. Speak your greeting IMMEDIATELY."
+                    )
+
+                # 4. Wait for the human or the AI to hang up
+                await call.ended_event.wait()
+                
+            except asyncio.TimeoutError:
+                session.engine.drop_call()
+                if session.gemini_socket and session.gemini_socket.is_connected:
+                    await session.gemini_socket.send_system_event(
+                        "Call timed out. No one answered. You must mark the mission as failed or try another number."
+                    )
+            finally:
+                # 5. Cleanup
+                session.bridge_active = False
+                if session.gemini_socket and session.gemini_socket.is_connected:
+                    await session.gemini_socket.send_system_event(
+                        "The human has hung up the phone. The call is disconnected. You must now use the mark_mission_complete tool."
                     )
                     session.gemini_socket.pbx_inject_callback = lambda x: None
 
-            asyncio.create_task(monitor_call_drop())
-            
-            # Instruct the AI to yield the turn and listen, rather than rambling.
-            return {
-                "status": "success", 
-                "message": "CRITICAL SYSTEM DIRECTIVE: The call has connected and the user is listening to your pre-generated greeting right now. You MUST remain completely silent. DO NOT narrate your thoughts. DO NOT say 'I am waiting' or 'I am listening'. Output NO spoken text. Yield your turn immediately and wait for the human to speak first."
-            }
-            
-        except asyncio.TimeoutError:
-            session.engine.drop_call()
-            session.gemini_socket.pbx_inject_callback = original_inject 
-            return {
-                "status": "failed", 
-                "message": "Call timed out. The user did not answer.",
-                "internal_directive": "If you have an alternative extension, you MUST use this tool again to try the next number."
-            }
+        # Spawn the monitor task and DO NOT block
+        asyncio.create_task(monitor_call())
+        
+        # Temporarily mute the AI while ringing so it doesn't try to talk to the dial tone
+        session.gemini_socket.pbx_inject_callback = lambda x: None
+        
+        # RETURN IMMEDIATELY: This unblocks the Gemini API
+        return {
+            "status": "dialing", 
+            "message": "Dialing initiated successfully. The phone is currently ringing. You MUST wait silently. DO NOT SPEAK. A system event will notify you the exact moment the human answers."
+        }
