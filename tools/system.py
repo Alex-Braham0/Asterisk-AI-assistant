@@ -65,9 +65,13 @@ class SubmitCallSummary(BaseTool):
         asyncio.create_task(session.db.tasks.spool_call_summary(extension, args))
         
         async def delayed_teardown():
-            await asyncio.sleep(1.5) # Give the WebSocket time to send the toolResponse
+            await asyncio.sleep(1.5)
             session.gemini_socket.is_connected = False
-            session.drop_call()
+            
+            # FIX: Only command Baresip to hangup if the line is still active
+            if session.engine.active_call:
+                session.drop_call()
+                
             session.terminate_bridge()
             
         asyncio.create_task(delayed_teardown())

@@ -175,8 +175,8 @@ class MediaEngine:
                     outdata[:] = b'\x00' * req_bytes
                     
             if not ai_speaking:
-                try: self.main_loop.call_soon_threadsafe(self.pbx_to_ai_queue.put_nowait, bytes(indata))
-                except asyncio.QueueFull: pass
+                # FIX: Defer execution to the loop-safe helper
+                self.main_loop.call_soon_threadsafe(self._safe_enqueue, bytes(indata))
 
         try:
             # Using device=None forces Python to use the OS default.
@@ -185,3 +185,14 @@ class MediaEngine:
                 while self._audio_running: time.sleep(0.1)
         except Exception as e:
             print(f"[MediaEngine] Audio stream crash: {e}")
+
+    def _safe_enqueue(self, pcm_data: bytes):
+        """Executes safely INSIDE the asyncio event loop to manage queue capacity."""
+        try:
+            self.pbx_to_ai_queue.put_nowait(pcm_data)
+        except asyncio.QueueFull:
+            try:
+                self.pbx_to_ai_queue.get_nowait() # Discard the oldest 20ms frame
+                self.pbx_to_ai_queue.put_nowait(pcm_data)
+            except asyncio.QueueEmpty:
+                pass
