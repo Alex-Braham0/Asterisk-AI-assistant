@@ -12,8 +12,14 @@ log_ring_buffer = deque(maxlen=500)
 active_websockets = set()
 
 class DashboardLogHandler(logging.Handler):
-    """Intercepts system logs and broadcasts them to the dashboard."""
+    """Intercepts system logs and broadcasts them, ignoring dashboard noise."""
     def emit(self, record):
+        # Drop web server access logs and dashboard polling
+        if record.name == 'aiohttp.access':
+            return
+        if "GET /api/status" in record.getMessage() or "GET /api/logs" in record.getMessage():
+            return
+            
         msg = self.format(record)
         log_ring_buffer.append(msg)
         for ws in list(active_websockets):
@@ -30,22 +36,24 @@ class DashboardServer:
 
     async def init_app(self):
         app = web.Application()
-        
-        # API Routes
         app.router.add_get('/api/status', self.get_status)
         app.router.add_get('/api/logs/ws', self.websocket_handler)
         app.router.add_get('/api/calls', self.get_past_calls)
         app.router.add_get('/api/missions', self.get_missions)
         app.router.add_put('/api/missions/{id}', self.update_mission)
+        
+        # Updated Memory Routes
         app.router.add_get('/api/memory/{type}', self.list_memory)
-        app.router.add_get('/api/memory/{type}/{filename}', self.get_memory)
-        app.router.add_put('/api/memory/{type}/{filename}', self.update_memory)
+        app.router.add_get('/api/memory/{type}/{item_id}', self.get_memory)
+        app.router.add_put('/api/memory/{type}/{item_id}', self.update_memory)
 
-        # Static Route for Frontend
         static_dir = os.path.join(os.path.dirname(__file__), 'static')
         os.makedirs(static_dir, exist_ok=True)
-        app.router.add_static('/', static_dir, name='static')
         
+        async def index_handler(request):
+            return web.FileResponse(os.path.join(static_dir, 'index.html'))
+        
+        app.router.add_get('/', index_handler)
         return app
 
     async def get_status(self, request):
@@ -135,16 +143,24 @@ class DashboardServer:
 
     async def list_memory(self, request):
         mem_type = request.match_info['type']
-        target_dir = self.base_dir / f"memory_files/{mem_type}"
-        files = []
-        if target_dir.exists():
-            files = [f.name for f in target_dir.glob("*.md")]
-        return web.json_response(files)
+        items = []
+        
+        async with self.db.pool.acquire() as conn:
+            if mem_type == "endpoints":
+                records = await conn.fetch("SELECT extension, caller_id_name FROM Endpoints ORDER BY extension")
+                for r in records:
+                    items.append({"id": str(r["extension"]), "display": f"{r['extension']} - {r['caller_id_name']}"})
+            elif mem_type == "users":
+                records = await conn.fetch("SELECT id, username, full_name FROM Users ORDER BY username")
+                for r in records:
+                    items.append({"id": str(r["id"]), "display": f"{r['username']} ({r['full_name']})"})
+                    
+        return web.json_response(items)
 
     async def get_memory(self, request):
         mem_type = request.match_info['type']
-        filename = request.match_info['filename']
-        file_path = self.base_dir / f"memory_files/{mem_type}/{filename}"
+        item_id = request.match_info['item_id']
+        file_path = self.base_dir / f"memory_files/{mem_type}/{item_id}.md"
         
         if file_path.exists():
             with open(file_path, "r", encoding="utf-8") as f:
@@ -153,13 +169,13 @@ class DashboardServer:
 
     async def update_memory(self, request):
         mem_type = request.match_info['type']
-        filename = request.match_info['filename']
+        item_id = request.match_info['item_id']
         data = await request.json()
         
         target_dir = self.base_dir / f"memory_files/{mem_type}"
         target_dir.mkdir(parents=True, exist_ok=True)
         
-        file_path = target_dir / filename
+        file_path = target_dir / f"{item_id}.md"
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(data.get("content", ""))
             

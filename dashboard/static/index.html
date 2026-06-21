@@ -6,60 +6,115 @@
     <title>Asterisk AI Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        #log-terminal { height: 400px; overflow-y: auto; background: #1e1e1e; color: #00ff00; font-family: monospace; padding: 10px; border-radius: 5px; }
-        .memory-editor { height: 400px; width: 100%; font-family: monospace; background: #2b2b2b; color: #fff; border: 1px solid #444; padding: 10px;}
-        .nav-tabs .nav-link { cursor: pointer; }
+        body { background-color: #121212; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .nav-tabs { border-bottom: 1px solid #333; margin-bottom: 20px; }
+        .nav-tabs .nav-link { cursor: pointer; color: #a0a0a0; border: none; padding: 12px 20px; font-weight: 500; }
+        .nav-tabs .nav-link.active { background-color: #1e1e1e; color: #fff; border-bottom: 2px solid #0d6efd; border-radius: 4px 4px 0 0; }
+        .nav-tabs .nav-link:hover:not(.active) { color: #fff; border-bottom: 2px solid #444; }
+        .card { background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .card-header { background-color: #252525; border-bottom: 1px solid #333; font-weight: 600; }
+        
+        /* Terminal Styling */
+        .terminal-container { background: #0c0c0c; border: 1px solid #333; border-radius: 8px; overflow: hidden; }
+        .terminal-header { background: #2d2d2d; padding: 8px 15px; display: flex; align-items: center; border-bottom: 1px solid #111; }
+        .terminal-dots span { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; }
+        .dot-red { background-color: #ff5f56; }
+        .dot-yellow { background-color: #ffbd2e; }
+        .dot-green { background-color: #27c93f; }
+        #log-terminal { height: 500px; overflow-y: auto; color: #00ff00; font-family: 'Consolas', 'Courier New', monospace; font-size: 0.9rem; padding: 15px; }
+        #log-terminal div { margin-bottom: 4px; border-bottom: 1px solid #1a1a1a; padding-bottom: 2px; }
+        
+        .memory-editor { height: 500px; width: 100%; font-family: 'Consolas', monospace; background: #1a1a1a; color: #d4d4d4; border: 1px solid #444; border-radius: 6px; padding: 15px; resize: vertical; }
+        .memory-editor:focus { outline: none; border-color: #0d6efd; box-shadow: 0 0 0 0.25rem rgba(13,110,253,.25); }
+        .table-dark { --bs-table-bg: #1e1e1e; }
     </style>
 </head>
 <body>
-    <div class="container mt-4">
-        <h2>🤖 Asterisk AI Swarm Dashboard</h2>
+    <div class="container py-4">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h2 class="m-0 text-white">🤖 Asterisk AI Swarm Dashboard</h2>
+            <div id="status-indicator" class="badge bg-secondary fs-6 py-2 px-3">Connecting...</div>
+        </div>
         
-        <ul class="nav nav-tabs mt-4" id="dashTabs">
+        <ul class="nav nav-tabs" id="dashTabs">
             <li class="nav-item"><a class="nav-link active" onclick="switchTab('live')">Live View</a></li>
             <li class="nav-item"><a class="nav-link" onclick="switchTab('calls')">Call History</a></li>
             <li class="nav-item"><a class="nav-link" onclick="switchTab('missions')">Missions</a></li>
-            <li class="nav-item"><a class="nav-link" onclick="switchTab('memory')">Memory</a></li>
+            <li class="nav-item"><a class="nav-link" onclick="switchTab('memory')">Memory Settings</a></li>
         </ul>
 
-        <div id="tab-live" class="tab-content mt-4">
-            <div class="card mb-3">
+        <!-- LIVE VIEW TAB -->
+        <div id="tab-live" class="tab-content">
+            <div class="card mb-4" id="call-card" style="display: none;">
+                <div class="card-body bg-primary bg-opacity-10 border-primary border border-opacity-25 rounded">
+                    <h5 class="text-primary mb-1">Active Call Detected</h5>
+                    <div id="active-call-info" class="fs-5 fw-bold"></div>
+                </div>
+            </div>
+
+            <div class="terminal-container">
+                <div class="terminal-header">
+                    <div class="terminal-dots">
+                        <span class="dot-red"></span><span class="dot-yellow"></span><span class="dot-green"></span>
+                    </div>
+                    <span class="ms-3 text-muted" style="font-size: 0.85rem;">system_daemons.log</span>
+                </div>
+                <div id="log-terminal"></div>
+            </div>
+        </div>
+
+        <!-- CALLS TAB -->
+        <div id="tab-calls" class="tab-content" style="display:none;">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span class="m-0">Processed Call Summaries</span>
+                    <input type="text" id="callSearch" class="form-control form-control-sm w-auto" placeholder="Filter summaries..." onkeyup="loadCalls()">
+                </div>
+                <div class="card-body p-0">
+                    <div id="calls-list" class="list-group list-group-flush border-radius-bottom"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MISSIONS TAB -->
+        <div id="tab-missions" class="tab-content" style="display:none;">
+            <div class="card">
+                <div class="card-body p-0 table-responsive">
+                    <table class="table table-dark table-hover m-0">
+                        <thead class="table-active">
+                            <tr><th>UTC Schedule</th><th>Status</th><th>Directive / Execution Log</th><th class="text-end">Action</th></tr>
+                        </thead>
+                        <tbody id="missions-table"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- MEMORY TAB -->
+        <div id="tab-memory" class="tab-content" style="display:none;">
+            <div class="card">
+                <div class="card-header">Context Injection Management</div>
                 <div class="card-body">
-                    <h4>Status: <span id="line-status" class="badge bg-secondary">Checking...</span></h4>
-                    <div id="active-call-info" class="mt-2 text-info"></div>
+                    <div class="row mb-3">
+                        <div class="col-md-3">
+                            <label class="form-label text-muted small">Target Type</label>
+                            <select class="form-select bg-dark text-white border-secondary" id="memType" onchange="loadMemoryList()">
+                                <option value="endpoints">Endpoints</option>
+                                <option value="users">Users</option>
+                            </select>
+                        </div>
+                        <div class="col-md-9">
+                            <label class="form-label text-muted small">Select Profile</label>
+                            <select class="form-select bg-dark text-white border-secondary" id="memItem" onchange="loadMemoryFile()"></select>
+                        </div>
+                    </div>
+                    <textarea id="memEditor" class="memory-editor mb-3" placeholder="Select a profile to load markdown context..."></textarea>
+                    <div class="d-flex align-items-center">
+                        <button class="btn btn-primary px-4" onclick="saveMemory()">Save Context</button>
+                        <span id="memSaveStatus" class="ms-3 text-success fw-bold" style="display:none; transition: opacity 0.3s;">✓ Saved Successfully</span>
+                    </div>
                 </div>
             </div>
-            <h5>Live System Logs</h5>
-            <div id="log-terminal"></div>
-        </div>
-
-        <div id="tab-calls" class="tab-content mt-4" style="display:none;">
-            <input type="text" id="callSearch" class="form-control mb-3" placeholder="Filter calls..." onkeyup="loadCalls()">
-            <div id="calls-list" class="list-group"></div>
-        </div>
-
-        <div id="tab-missions" class="tab-content mt-4" style="display:none;">
-            <table class="table table-striped">
-                <thead><tr><th>UTC</th><th>Status</th><th>Directive / Report</th><th>Action</th></tr></thead>
-                <tbody id="missions-table"></tbody>
-            </table>
-        </div>
-
-        <div id="tab-memory" class="tab-content mt-4" style="display:none;">
-            <div class="row mb-3">
-                <div class="col-md-3">
-                    <select class="form-select" id="memType" onchange="loadMemoryList()">
-                        <option value="users">Users</option>
-                        <option value="endpoints">Endpoints</option>
-                    </select>
-                </div>
-                <div class="col-md-9">
-                    <select class="form-select" id="memFile" onchange="loadMemoryFile()"></select>
-                </div>
-            </div>
-            <textarea id="memEditor" class="memory-editor mb-3"></textarea>
-            <button class="btn btn-primary" onclick="saveMemory()">Save Memory</button>
-            <span id="memSaveStatus" class="ms-2 text-success" style="display:none;">Saved!</span>
         </div>
     </div>
 
@@ -72,28 +127,35 @@
             
             if(tabId === 'calls') loadCalls();
             if(tabId === 'missions') loadMissions();
-            if(tabId === 'memory' && document.getElementById('memFile').options.length === 0) loadMemoryList();
+            if(tabId === 'memory' && document.getElementById('memItem').options.length === 0) loadMemoryList();
         }
 
         // Live View Logic
         setInterval(async () => {
-            const res = await fetch('/api/status');
-            const data = await res.json();
-            const badge = document.getElementById('line-status');
-            
-            if (data.line_active) {
-                badge.className = "badge bg-danger";
-                badge.innerText = "Line Active (Locked)";
-                if (data.call_info) {
-                    document.getElementById('active-call-info').innerText = 
-                        `Current Call: ${data.call_info.caller_name} (${data.call_info.caller_number})`;
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                const badge = document.getElementById('status-indicator');
+                const callCard = document.getElementById('call-card');
+                
+                if (data.line_active) {
+                    badge.className = "badge bg-danger fs-6 py-2 px-3";
+                    badge.innerText = "System Locked (Active)";
+                    if (data.call_info) {
+                        callCard.style.display = 'block';
+                        document.getElementById('active-call-info').innerText = 
+                            `${data.call_info.caller_name} (Ext: ${data.call_info.caller_number})`;
+                    } else {
+                        callCard.style.display = 'none';
+                    }
                 } else {
-                    document.getElementById('active-call-info').innerText = "AI is executing a background task.";
+                    badge.className = "badge bg-success fs-6 py-2 px-3";
+                    badge.innerText = "System Idle (Ready)";
+                    callCard.style.display = 'none';
                 }
-            } else {
-                badge.className = "badge bg-success";
-                badge.innerText = "Line Free (Idle)";
-                document.getElementById('active-call-info').innerText = "";
+            } catch (e) {
+                document.getElementById('status-indicator').className = "badge bg-warning text-dark fs-6 py-2 px-3";
+                document.getElementById('status-indicator').innerText = "Connection Lost";
             }
         }, 1000);
 
@@ -101,6 +163,9 @@
         const terminal = document.getElementById('log-terminal');
         ws.onmessage = (event) => {
             terminal.innerHTML += `<div>${event.data}</div>`;
+            if (terminal.innerHTML.length > 50000) {
+                terminal.innerHTML = terminal.innerHTML.substring(terminal.innerHTML.length - 20000); // Prevent DOM bloat
+            }
             terminal.scrollTop = terminal.scrollHeight;
         };
 
@@ -115,12 +180,12 @@
             calls.forEach(call => {
                 if(filter && !call.summary.toLowerCase().includes(filter) && !call.extension.includes(filter)) return;
                 list.innerHTML += `
-                    <div class="list-group-item">
-                        <div class="d-flex w-100 justify-content-between">
-                            <h6 class="mb-1">Ext: ${call.extension} | Duration: ${call.duration}s</h6>
-                            <small>${call.timestamp}</small>
+                    <div class="list-group-item bg-transparent text-white border-bottom border-secondary py-3">
+                        <div class="d-flex w-100 justify-content-between mb-2">
+                            <h6 class="mb-0 fw-bold text-info">Ext: ${call.extension} | ${call.duration}s</h6>
+                            <small class="text-muted">${call.timestamp}</small>
                         </div>
-                        <p class="mb-1 text-muted">${call.summary}</p>
+                        <p class="mb-0 text-light" style="font-size: 0.95rem;">${call.summary}</p>
                     </div>`;
             });
         }
@@ -134,69 +199,76 @@
             
             missions.forEach(m => {
                 const isPending = m.status === 'pending';
-                const statusBadge = isPending ? 'bg-warning' : (m.status === 'completed' ? 'bg-success' : 'bg-danger');
+                const statusBadge = isPending ? 'bg-warning text-dark' : (m.status === 'completed' ? 'bg-success' : 'bg-danger');
                 
                 let contentHTML = isPending 
-                    ? `<textarea class="form-control" id="dir-${m.id}">${m.directive}</textarea>`
-                    : `<strong>Directive:</strong> ${m.directive}<hr class="my-1"><strong>Log:</strong> <pre class="mb-0" style="font-size:12px;">${m.final_report || 'No report.'}</pre>`;
+                    ? `<textarea class="form-control bg-dark text-white border-secondary" id="dir-${m.id}" rows="2">${m.directive}</textarea>`
+                    : `<div class="text-info mb-1 fw-bold">Directive: ${m.directive}</div><div class="bg-dark p-2 rounded border border-secondary" style="font-size:12px; font-family:monospace; max-height: 150px; overflow-y: auto;">${m.final_report || 'No log output.'}</div>`;
                     
                 let actionHTML = isPending
-                    ? `<button class="btn btn-sm btn-primary" onclick="updateMission(${m.id})">Save Setup</button>`
+                    ? `<button class="btn btn-sm btn-outline-primary" onclick="updateMission(${m.id})">Save Changes</button>`
                     : ``;
 
                 tbody.innerHTML += `
                     <tr>
-                        <td style="width: 15%">${m.run_at_utc}</td>
-                        <td style="width: 10%"><span class="badge ${statusBadge}">${m.status}</span></td>
-                        <td style="width: 60%">${contentHTML}</td>
-                        <td style="width: 15%">${actionHTML}</td>
+                        <td class="align-middle" style="width: 15%">${m.run_at_utc}</td>
+                        <td class="align-middle" style="width: 10%"><span class="badge ${statusBadge}">${m.status.toUpperCase()}</span></td>
+                        <td class="align-middle" style="width: 60%">${contentHTML}</td>
+                        <td class="align-middle text-end" style="width: 15%">${actionHTML}</td>
                     </tr>`;
             });
         }
 
         async function updateMission(id) {
+            const btn = event.target;
+            const originalText = btn.innerText;
+            btn.innerText = 'Saving...';
             const newDirective = document.getElementById(`dir-${id}`).value;
             await fetch(`/api/missions/${id}`, {
                 method: 'PUT',
                 body: JSON.stringify({ directive: newDirective })
             });
-            loadMissions();
+            setTimeout(loadMissions, 500);
         }
 
         // Memory Logic
         async function loadMemoryList() {
             const type = document.getElementById('memType').value;
             const res = await fetch(`/api/memory/${type}`);
-            const files = await res.json();
-            const select = document.getElementById('memFile');
-            select.innerHTML = '<option value="">Select a profile...</option>';
-            files.forEach(f => select.innerHTML += `<option value="${f}">${f}</option>`);
+            const items = await res.json();
+            const select = document.getElementById('memItem');
+            
+            select.innerHTML = '<option value="">Select a profile to load...</option>';
+            items.forEach(item => {
+                select.innerHTML += `<option value="${item.id}">${item.display}</option>`;
+            });
             document.getElementById('memEditor').value = '';
         }
 
         async function loadMemoryFile() {
             const type = document.getElementById('memType').value;
-            const file = document.getElementById('memFile').value;
-            if(!file) return;
-            const res = await fetch(`/api/memory/${type}/${file}`);
+            const itemId = document.getElementById('memItem').value;
+            if(!itemId) return;
+            
+            const res = await fetch(`/api/memory/${type}/${itemId}`);
             const data = await res.json();
             document.getElementById('memEditor').value = data.content;
         }
 
         async function saveMemory() {
             const type = document.getElementById('memType').value;
-            const file = document.getElementById('memFile').value;
+            const itemId = document.getElementById('memItem').value;
             const content = document.getElementById('memEditor').value;
-            if(!file) return;
+            if(!itemId) return;
             
-            await fetch(`/api/memory/${type}/${file}`, {
+            await fetch(`/api/memory/${type}/${itemId}`, {
                 method: 'PUT',
                 body: JSON.stringify({ content: content })
             });
             
             const status = document.getElementById('memSaveStatus');
-            status.style.display = 'inline';
-            setTimeout(() => status.style.display = 'none', 2000);
+            status.style.display = 'inline-block';
+            setTimeout(() => status.style.display = 'none', 2500);
         }
     </script>
 </body>
