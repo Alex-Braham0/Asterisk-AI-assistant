@@ -69,4 +69,7 @@ def setup_logging(level: str = "INFO") -> None:
     logging.getLogger("pymysql").setLevel(logging.WARNING)
     logging.getLogger("asyncpg").setLevel(logging.WARNING)
 
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp.server").setLevel(logging.WARNING)
+
     logging.info("Application-wide logging infrastructure initialized successfully.")
