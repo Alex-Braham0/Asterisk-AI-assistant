@@ -57,7 +57,7 @@ def setup_logging(level: str = "INFO") -> None:
 
     dash_handler = DashboardLogHandler()
     dash_handler.setFormatter(formatter)
-    dash_handler.setLevel(level.upper())
+    dash_handler.setLevel(logging.INFO)
     root_logger.addHandler(dash_handler)
 
     # Prevent massive debug floods coming from low-level network components

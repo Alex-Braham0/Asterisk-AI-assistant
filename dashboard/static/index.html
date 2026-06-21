@@ -14,19 +14,21 @@
         .card { background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
         .card-header { background-color: #252525; border-bottom: 1px solid #333; font-weight: 600; }
         
-        /* Terminal Styling */
         .terminal-container { background: #0c0c0c; border: 1px solid #333; border-radius: 8px; overflow: hidden; }
         .terminal-header { background: #2d2d2d; padding: 8px 15px; display: flex; align-items: center; border-bottom: 1px solid #111; }
         .terminal-dots span { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; }
         .dot-red { background-color: #ff5f56; }
         .dot-yellow { background-color: #ffbd2e; }
         .dot-green { background-color: #27c93f; }
-        #log-terminal { height: 500px; overflow-y: auto; color: #00ff00; font-family: 'Consolas', 'Courier New', monospace; font-size: 0.9rem; padding: 15px; }
+        #log-terminal { height: 600px; overflow-y: auto; color: #00ff00; font-family: 'Consolas', 'Courier New', monospace; font-size: 0.9rem; padding: 15px; }
         #log-terminal div { margin-bottom: 4px; border-bottom: 1px solid #1a1a1a; padding-bottom: 2px; }
         
-        .memory-editor { height: 500px; width: 100%; font-family: 'Consolas', monospace; background: #1a1a1a; color: #d4d4d4; border: 1px solid #444; border-radius: 6px; padding: 15px; resize: vertical; }
+        .memory-editor { height: 400px; width: 100%; font-family: 'Consolas', monospace; background: #1a1a1a; color: #d4d4d4; border: 1px solid #444; border-radius: 6px; padding: 15px; resize: vertical; }
         .memory-editor:focus { outline: none; border-color: #0d6efd; box-shadow: 0 0 0 0.25rem rgba(13,110,253,.25); }
         .table-dark { --bs-table-bg: #1e1e1e; }
+        
+        .health-stat { font-size: 1.5rem; font-weight: bold; }
+        pre.preview-code { background: #0c0c0c; padding: 15px; border-radius: 5px; border: 1px solid #333; color: #d4d4d4; max-height: 500px; overflow-y: auto; white-space: pre-wrap; word-wrap: break-word;}
     </style>
 </head>
 <body>
@@ -39,31 +41,76 @@
         <ul class="nav nav-tabs" id="dashTabs">
             <li class="nav-item"><a class="nav-link active" onclick="switchTab('live')">Live View</a></li>
             <li class="nav-item"><a class="nav-link" onclick="switchTab('calls')">Call History</a></li>
-            <li class="nav-item"><a class="nav-link" onclick="switchTab('missions')">Missions</a></li>
-            <li class="nav-item"><a class="nav-link" onclick="switchTab('memory')">Memory Settings</a></li>
+            <li class="nav-item"><a class="nav-link" onclick="switchTab('missions')">Missions & Swarm</a></li>
+            <li class="nav-item"><a class="nav-link" onclick="switchTab('memory')">Memory & Routing</a></li>
         </ul>
 
-        <!-- LIVE VIEW TAB -->
         <div id="tab-live" class="tab-content">
-            <div class="card mb-4" id="call-card" style="display: none;">
-                <div class="card-body bg-primary bg-opacity-10 border-primary border border-opacity-25 rounded">
-                    <h5 class="text-primary mb-1">Active Call Detected</h5>
-                    <div id="active-call-info" class="fs-5 fw-bold"></div>
-                </div>
-            </div>
-
-            <div class="terminal-container">
-                <div class="terminal-header">
-                    <div class="terminal-dots">
-                        <span class="dot-red"></span><span class="dot-yellow"></span><span class="dot-green"></span>
+            <div class="row">
+                <div class="col-lg-8">
+                    <div class="card mb-4" id="call-card" style="display: none;">
+                        <div class="card-body bg-primary bg-opacity-10 border-primary border border-opacity-25 rounded">
+                            <h5 class="text-primary mb-1">Active Call Detected</h5>
+                            <div id="active-call-info" class="fs-5 fw-bold"></div>
+                        </div>
                     </div>
-                    <span class="ms-3 text-muted" style="font-size: 0.85rem;">system_daemons.log</span>
+
+                    <div class="terminal-container mb-4">
+                        <div class="terminal-header">
+                            <div class="terminal-dots">
+                                <span class="dot-red"></span><span class="dot-yellow"></span><span class="dot-green"></span>
+                            </div>
+                            <span class="ms-3 text-muted" style="font-size: 0.85rem;">system_daemons.log</span>
+                        </div>
+                        <div id="log-terminal"></div>
+                    </div>
                 </div>
-                <div id="log-terminal"></div>
+                
+                <div class="col-lg-4">
+                    <div class="card mb-4">
+                        <div class="card-header border-bottom border-secondary">System Health</div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="text-muted small">Disk Usage (Root)</label>
+                                <div class="d-flex justify-content-between">
+                                    <span class="health-stat" id="disk-used">0 GB</span>
+                                    <span class="text-muted align-self-end">of <span id="disk-total">0</span> GB</span>
+                                </div>
+                                <div class="progress mt-1" style="height: 5px;">
+                                    <div id="disk-bar" class="progress-bar bg-info" role="progressbar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="text-muted small">PostgreSQL Connection Pool</label>
+                                <div class="d-flex justify-content-between">
+                                    <span class="health-stat" id="db-active">0 Active</span>
+                                    <span class="text-muted align-self-end"><span id="db-idle">0</span> Idle</span>
+                                </div>
+                            </div>
+                            <button class="btn btn-outline-warning btn-sm w-100" onclick="recoverMissions()">Run Mission Cleanup</button>
+                            <div id="recover-status" class="small text-success mt-1" style="display:none;"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="card mb-4">
+                        <div class="card-header border-bottom border-secondary">Telephony Diagnostics</div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="text-muted small">Baresip Process Status</label>
+                                <div><span id="baresip-badge" class="badge bg-secondary fs-6 mt-1">Unknown</span></div>
+                            </div>
+                            <div class="mb-3">
+                                <label class="text-muted small">Audio Ingestion Queue (Latency Risk)</label>
+                                <div><span class="health-stat" id="audio-queue">0</span> <span class="text-muted">frames pending</span></div>
+                            </div>
+                            <button class="btn btn-outline-danger btn-sm w-100" onclick="restartTelephony()">Force Restart Engine</button>
+                            <div id="restart-status" class="small text-danger mt-1" style="display:none;">Restarting... Please wait.</div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <!-- CALLS TAB -->
         <div id="tab-calls" class="tab-content" style="display:none;">
             <div class="card">
                 <div class="card-header d-flex justify-content-between align-items-center">
@@ -76,13 +123,12 @@
             </div>
         </div>
 
-        <!-- MISSIONS TAB -->
         <div id="tab-missions" class="tab-content" style="display:none;">
             <div class="card">
                 <div class="card-body p-0 table-responsive">
                     <table class="table table-dark table-hover m-0">
                         <thead class="table-active">
-                            <tr><th>UTC Schedule</th><th>Status</th><th>Directive / Execution Log</th><th class="text-end">Action</th></tr>
+                            <tr><th>UTC Schedule</th><th>Status</th><th>Directive / Execution Log</th><th class="text-end" style="min-width: 200px;">Action</th></tr>
                         </thead>
                         <tbody id="missions-table"></tbody>
                     </table>
@@ -90,9 +136,8 @@
             </div>
         </div>
 
-        <!-- MEMORY TAB -->
         <div id="tab-memory" class="tab-content" style="display:none;">
-            <div class="card">
+            <div class="card mb-4">
                 <div class="card-header">Context Injection Management</div>
                 <div class="card-body">
                     <div class="row mb-3">
@@ -115,10 +160,41 @@
                     </div>
                 </div>
             </div>
+            
+            <div class="card">
+                <div class="card-header">Physical Routing Map (Read-Only)</div>
+                <div class="card-body p-0">
+                    <table class="table table-dark table-sm m-0 table-striped">
+                        <thead><tr><th>User Name</th><th>Extension</th><th>Device Name</th><th>Device Type</th><th>Default Target</th></tr></thead>
+                        <tbody id="user-map-table"></tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
 
+    <div class="modal fade" id="previewModal" tabindex="-1" aria-hidden="true" data-bs-theme="dark">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content bg-dark text-white border-secondary">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title">Mission Prompt Preview</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small mb-2">This is the exact string generated by the ContextBuilder that will be injected into the LLM when the background worker claims this mission.</p>
+                    <pre id="preview-content" class="preview-code"></pre>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        let missionsData = [];
+
         function switchTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
             document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
@@ -127,10 +203,13 @@
             
             if(tabId === 'calls') loadCalls();
             if(tabId === 'missions') loadMissions();
-            if(tabId === 'memory' && document.getElementById('memItem').options.length === 0) loadMemoryList();
+            if(tabId === 'memory') {
+                if(document.getElementById('memItem').options.length === 0) loadMemoryList();
+                loadUserMap();
+            }
         }
 
-        // Live View Logic
+        // --- Live Polling ---
         setInterval(async () => {
             try {
                 const res = await fetch('/api/status');
@@ -153,23 +232,70 @@
                     badge.innerText = "System Idle (Ready)";
                     callCard.style.display = 'none';
                 }
+                
+                // Fetch System Health Data
+                const healthRes = await fetch('/api/system/health');
+                const hData = await healthRes.json();
+                
+                document.getElementById('disk-used').innerText = `${hData.disk.used} GB`;
+                document.getElementById('disk-total').innerText = hData.disk.total;
+                const diskPct = (hData.disk.used / hData.disk.total) * 100;
+                const bar = document.getElementById('disk-bar');
+                bar.style.width = `${diskPct}%`;
+                bar.className = `progress-bar ${diskPct > 85 ? 'bg-danger' : 'bg-info'}`;
+                
+                document.getElementById('db-active').innerText = `${hData.db.active} Active`;
+                document.getElementById('db-idle').innerText = hData.db.idle;
+                
+                const bBadge = document.getElementById('baresip-badge');
+                if(hData.engine.running) {
+                    bBadge.className = "badge bg-success fs-6 mt-1";
+                    bBadge.innerText = "Running";
+                } else {
+                    bBadge.className = "badge bg-danger fs-6 mt-1";
+                    bBadge.innerText = "Crashed / Stopped";
+                }
+                
+                const qSize = hData.engine.queue_size;
+                const qEl = document.getElementById('audio-queue');
+                qEl.innerText = qSize;
+                qEl.className = `health-stat ${qSize > 50 ? 'text-danger' : 'text-success'}`;
+
             } catch (e) {
                 document.getElementById('status-indicator').className = "badge bg-warning text-dark fs-6 py-2 px-3";
                 document.getElementById('status-indicator').innerText = "Connection Lost";
             }
-        }, 1000);
+        }, 2000);
 
         const ws = new WebSocket(`ws://${window.location.host}/api/logs/ws`);
         const terminal = document.getElementById('log-terminal');
         ws.onmessage = (event) => {
             terminal.innerHTML += `<div>${event.data}</div>`;
             if (terminal.innerHTML.length > 50000) {
-                terminal.innerHTML = terminal.innerHTML.substring(terminal.innerHTML.length - 20000); // Prevent DOM bloat
+                terminal.innerHTML = terminal.innerHTML.substring(terminal.innerHTML.length - 20000); 
             }
             terminal.scrollTop = terminal.scrollHeight;
         };
 
-        // Past Calls Logic
+        // --- Diagnostics Functions ---
+        async function recoverMissions() {
+            const res = await fetch('/api/system/recover', { method: 'POST' });
+            const data = await res.json();
+            const status = document.getElementById('recover-status');
+            status.innerText = `Recovered ${data.recovered} stuck missions.`;
+            status.style.display = 'block';
+            setTimeout(() => status.style.display = 'none', 4000);
+            if(document.getElementById('tab-missions').style.display === 'block') loadMissions();
+        }
+
+        async function restartTelephony() {
+            const status = document.getElementById('restart-status');
+            status.style.display = 'block';
+            await fetch('/api/system/restart_telephony', { method: 'POST' });
+            setTimeout(() => status.style.display = 'none', 3000);
+        }
+
+        // --- Calls Tab ---
         async function loadCalls() {
             const res = await fetch('/api/calls');
             const calls = await res.json();
@@ -190,14 +316,14 @@
             });
         }
 
-        // Missions Logic
+        // --- Missions Tab ---
         async function loadMissions() {
             const res = await fetch('/api/missions');
-            const missions = await res.json();
+            missionsData = await res.json();
             const tbody = document.getElementById('missions-table');
             tbody.innerHTML = '';
             
-            missions.forEach(m => {
+            missionsData.forEach(m => {
                 const isPending = m.status === 'pending';
                 const statusBadge = isPending ? 'bg-warning text-dark' : (m.status === 'completed' ? 'bg-success' : 'bg-danger');
                 
@@ -206,22 +332,21 @@
                     : `<div class="text-info mb-1 fw-bold">Directive: ${m.directive}</div><div class="bg-dark p-2 rounded border border-secondary" style="font-size:12px; font-family:monospace; max-height: 150px; overflow-y: auto;">${m.final_report || 'No log output.'}</div>`;
                     
                 let actionHTML = isPending
-                    ? `<button class="btn btn-sm btn-outline-primary" onclick="updateMission(${m.id})">Save Changes</button>`
+                    ? `<button class="btn btn-sm btn-outline-info me-2" onclick="previewMission(${m.id})">Dry Run</button><button class="btn btn-sm btn-outline-primary" onclick="updateMission(${m.id}, event)">Save</button>`
                     : ``;
 
                 tbody.innerHTML += `
                     <tr>
-                        <td class="align-middle" style="width: 15%">${m.run_at_utc}</td>
-                        <td class="align-middle" style="width: 10%"><span class="badge ${statusBadge}">${m.status.toUpperCase()}</span></td>
-                        <td class="align-middle" style="width: 60%">${contentHTML}</td>
-                        <td class="align-middle text-end" style="width: 15%">${actionHTML}</td>
+                        <td class="align-middle">${m.run_at_utc}</td>
+                        <td class="align-middle"><span class="badge ${statusBadge}">${m.status.toUpperCase()}</span></td>
+                        <td class="align-middle">${contentHTML}</td>
+                        <td class="align-middle text-end">${actionHTML}</td>
                     </tr>`;
             });
         }
 
-        async function updateMission(id) {
+        async function updateMission(id, event) {
             const btn = event.target;
-            const originalText = btn.innerText;
             btn.innerText = 'Saving...';
             const newDirective = document.getElementById(`dir-${id}`).value;
             await fetch(`/api/missions/${id}`, {
@@ -231,7 +356,19 @@
             setTimeout(loadMissions, 500);
         }
 
-        // Memory Logic
+        async function previewMission(missionId) {
+            const mData = missionsData.find(m => m.id === missionId);
+            const currentDirective = document.getElementById(`dir-${missionId}`).value;
+            const res = await fetch('/api/missions/preview', {
+                method: 'POST',
+                body: JSON.stringify({ owner_id: mData.owner_user_id, directive: currentDirective })
+            });
+            const data = await res.json();
+            document.getElementById('preview-content').innerText = data.prompt;
+            new bootstrap.Modal(document.getElementById('previewModal')).show();
+        }
+
+        // --- Memory Tab ---
         async function loadMemoryList() {
             const type = document.getElementById('memType').value;
             const res = await fetch(`/api/memory/${type}`);
@@ -269,6 +406,25 @@
             const status = document.getElementById('memSaveStatus');
             status.style.display = 'inline-block';
             setTimeout(() => status.style.display = 'none', 2500);
+        }
+
+        async function loadUserMap() {
+            const res = await fetch('/api/system/usermap');
+            const mapData = await res.json();
+            const tbody = document.getElementById('user-map-table');
+            tbody.innerHTML = '';
+            
+            mapData.forEach(row => {
+                const isDefault = row.is_default ? '<span class="text-success fw-bold">✓ Yes</span>' : '<span class="text-muted">No</span>';
+                tbody.innerHTML += `
+                    <tr>
+                        <td>${row.primary_name || '-'}</td>
+                        <td class="text-info">${row.extension || '-'}</td>
+                        <td>${row.display_name || '-'}</td>
+                        <td>${row.device_type || '-'}</td>
+                        <td>${isDefault}</td>
+                    </tr>`;
+            });
         }
     </script>
 </body>
