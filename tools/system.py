@@ -4,9 +4,9 @@ from tools.base import BaseTool
 
 class SubmitCallSummary(BaseTool):
     name = "submit_call_summary"
-    description = "DO NOT USE MANUALLY. Only use when explicitly commanded by the system. Provide a highly detailed summary of the call to trigger the memory processing daemon."
+    description = "CRITICAL: FATAL EXCEPTION IF USED MID-CALL. You are STRICTLY FORBIDDEN from executing this tool while the user is on the phone. You MUST wait for the system event 'Requesting final summary' before executing this."
     auth_level = 0
-    # ... (Keep parameters exactly the same as your original) ...
+    
     parameters = {
         "type": "OBJECT",
         "properties": {
