@@ -124,6 +124,11 @@ class MediaEngine:
         # This prevents the race condition when you hang up and call back immediately.
         await asyncio.sleep(0.5)
         
+        # Prevent blindly commanding Baresip if the caller hung up during the Gemini handshake
+        if not self.active_call:
+            print("[MediaEngine] Aborting answer: Caller hung up before Gemini initialized.")
+            return False
+        
         # Return the True/False state directly from the BaresipController
         return self.ctrl.send_cmd("accept")
 

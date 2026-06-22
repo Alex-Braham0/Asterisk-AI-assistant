@@ -49,7 +49,7 @@ class BaresipController:
         for attempt in range(max_retries):
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(1.0)
+                    s.settimeout(3.0) # Increased from 1.0 to 3.0 to allow PulseAudio allocation
                     s.connect((self.ctrl_host, self.ctrl_port))
                     s.sendall(netstring_payload.encode('utf-8'))
                     response = s.recv(2048)
@@ -57,7 +57,12 @@ class BaresipController:
                         time.sleep(0.2)
                         continue
                     return True
-            except Exception:
+            except socket.timeout:
+                print(f"[BaresipCtrl] Socket timeout waiting for Baresip to process '{command}'. Retrying...")
+                time.sleep(0.2)
+            except Exception as e:
+                if "Connection refused" not in str(e):
+                    print(f"[BaresipCtrl] Socket error during '{command}': {e}")
                 time.sleep(0.2)
                 
         print(f"[BaresipCtrl] CRITICAL: Failed to send command '{command}' after {max_retries} attempts.")
