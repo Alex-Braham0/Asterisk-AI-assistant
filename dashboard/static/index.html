@@ -489,7 +489,7 @@
             
             const user = globalUsers.find(u => u.id === userId);
             
-            // Append cache-busting timestamps to force fresh fetches
+            // Cache busting
             const timestamp = Date.now();
             const pubRes = await fetch(`/api/memory/users/${userId}_public?t=${timestamp}`);
             const pubMem = (await pubRes.json()).content;

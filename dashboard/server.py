@@ -144,7 +144,13 @@ class DashboardServer:
     async def update_memory(self, request):
         try:
             file_path = self.base_dir / f"memory_files/{request.match_info['type']}/{request.match_info['item_id']}.md"
-            data = await request.json()
+            
+            # Tolerate missing Content-Type headers from the frontend
+            if request.can_read_body:
+                data = await request.json(loads=json.loads, content_type=None) 
+            else:
+                data = {}
+                
             new_content = data.get("content", "")
             
             # Ensure directory exists
@@ -159,22 +165,6 @@ class DashboardServer:
         except Exception as e:
             print(f"[Dashboard Error] Failed to save memory file: {e}")
             return web.json_response({"status": "error", "message": str(e)}, status=500)
-
-    async def update_memory(self, request):
-        mem_type = request.match_info['type']
-        item_id = request.match_info['item_id']
-        data = await request.json()
-        new_content = data.get("content", "")
-        
-        async with self.db.pool.acquire() as conn:
-            if mem_type == 'users':
-                user_id, visibility = item_id.split('_')
-                column = "public_memory" if visibility == "public" else "private_memory"
-                await conn.execute(f"UPDATE Users SET {column} = $1 WHERE id = $2", new_content, int(user_id))
-            elif mem_type == 'endpoints':
-                await conn.execute("UPDATE Endpoints SET endpoint_memory = $1 WHERE extension = $2", new_content, item_id)
-                
-        return web.json_response({"status": "success"})
 
     async def get_system_health(self, request):
         st = os.statvfs(self.base_dir)
