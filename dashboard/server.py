@@ -145,9 +145,11 @@ class DashboardServer:
         try:
             file_path = self.base_dir / f"memory_files/{request.match_info['type']}/{request.match_info['item_id']}.md"
             
-            # Tolerate missing Content-Type headers from the frontend
-            if request.can_read_body:
-                data = await request.json(loads=json.loads, content_type=None) 
+            # Manually parse the raw text body to bypass strict aiohttp Content-Type header checks
+            text_body = await request.text()
+            if text_body:
+                import json
+                data = json.loads(text_body)
             else:
                 data = {}
                 
