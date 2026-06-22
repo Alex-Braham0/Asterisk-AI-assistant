@@ -293,6 +293,13 @@ class DashboardServer:
                         a['extension'], user_id, a['is_default']
                     )
         return web.json_response({"status": "success"})
+    
+    async def update_mission(self, request):
+        m_id = int(request.match_info['id'])
+        data = await request.json()
+        async with self.db.pool.acquire() as conn:
+            await conn.execute("UPDATE Autonomous_Missions SET mission_directive = $1 WHERE id = $2", data['directive'], m_id)
+        return web.json_response({"status": "success"})
 
 async def start_dashboard(orchestrator, db, host="0.0.0.0", port=8080):
     server = DashboardServer(orchestrator, db)
