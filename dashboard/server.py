@@ -128,21 +128,37 @@ class DashboardServer:
                 results.append(d)
             return web.json_response(results)
 
-    async def update_mission(self, request):
-        m_id = int(request.match_info['id'])
-        data = await request.json()
-        async with self.db.pool.acquire() as conn:
-            await conn.execute("UPDATE Autonomous_Missions SET mission_directive = $1 WHERE id = $2", data['directive'], m_id)
-        return web.json_response({"status": "success"})
-
     async def get_memory(self, request):
         file_path = self.base_dir / f"memory_files/{request.match_info['type']}/{request.match_info['item_id']}.md"
-        content = file_path.read_text() if file_path.exists() else ""
+        content = ""
+        if file_path.exists():
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                
+        # Force the browser to NEVER cache this API response
         return web.json_response(
             {"content": content},
-            # Force the browser to NEVER cache this API response
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"} 
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
         )
+
+    async def update_memory(self, request):
+        try:
+            file_path = self.base_dir / f"memory_files/{request.match_info['type']}/{request.match_info['item_id']}.md"
+            data = await request.json()
+            new_content = data.get("content", "")
+            
+            # Ensure directory exists
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Write explicitly with UTF-8 to prevent silent OS drops
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+                
+            print(f"[Dashboard] Successfully saved memory file: {file_path}")
+            return web.json_response({"status": "success"})
+        except Exception as e:
+            print(f"[Dashboard Error] Failed to save memory file: {e}")
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     async def update_memory(self, request):
         mem_type = request.match_info['type']

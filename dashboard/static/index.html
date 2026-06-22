@@ -416,14 +416,70 @@
             loadManagementData(); 
         }
 
-        async function saveMemory(type, itemId, editorId, btnElement) {
-            const content = document.getElementById(editorId).value;
-            await fetch(`/api/memory/${type}/${itemId}`, { method: 'PUT', body: JSON.stringify({ content: content }) });
+        function toggleEditMemory(editorId, containerId, type, itemId) {
+            const textarea = document.getElementById(editorId);
+            textarea.removeAttribute('readonly');
+            textarea.setAttribute('data-original', textarea.value);
+            textarea.style.backgroundColor = '#1a1a1a'; // Lighter background to show it's active
+            textarea.focus();
+
+            const container = document.getElementById(containerId);
+            container.innerHTML = `
+                <button class="btn btn-secondary btn-sm me-2" onclick="cancelEditMemory('${editorId}', '${containerId}', '${type}', '${itemId}')">Cancel</button>
+                <button class="btn btn-success btn-sm" onclick="saveMemory('${type}', '${itemId}', '${editorId}', '${containerId}')">Save Changes</button>
+            `;
+        }
+
+        function cancelEditMemory(editorId, containerId, type, itemId) {
+            const textarea = document.getElementById(editorId);
+            textarea.value = textarea.getAttribute('data-original');
+            textarea.setAttribute('readonly', true);
+            textarea.style.backgroundColor = '#121212'; // Revert background
+
+            const container = document.getElementById(containerId);
+            container.innerHTML = `
+                <button class="btn btn-outline-light btn-sm" onclick="toggleEditMemory('${editorId}', '${containerId}', '${type}', '${itemId}')">Edit Memory</button>
+            `;
+        }
+
+        async function saveMemory(type, itemId, editorId, containerId) {
+            const textarea = document.getElementById(editorId);
+            const content = textarea.value;
+            const btn = document.querySelector(`#${containerId} .btn-success`);
             
-            const originalText = btnElement.innerText;
-            btnElement.innerText = 'Saved!';
-            btnElement.classList.replace('btn-primary', 'btn-success');
-            setTimeout(() => { btnElement.innerText = originalText; btnElement.classList.replace('btn-success', 'btn-primary'); }, 2000);
+            const originalText = btn.innerText;
+            btn.innerText = 'Saving...';
+            
+            try {
+                const response = await fetch(`/api/memory/${type}/${itemId}`, { 
+                    method: 'PUT', 
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content: content }) 
+                });
+
+                if (response.ok) {
+                    btn.innerText = 'Saved!';
+                    setTimeout(() => {
+                        // Lock the editor back down
+                        textarea.setAttribute('data-original', content);
+                        textarea.setAttribute('readonly', true);
+                        textarea.style.backgroundColor = '#121212';
+                        
+                        const container = document.getElementById(containerId);
+                        container.innerHTML = `
+                            <button class="btn btn-outline-light btn-sm" onclick="toggleEditMemory('${editorId}', '${containerId}', '${type}', '${itemId}')">Edit Memory</button>
+                        `;
+                    }, 1000);
+                } else {
+                    btn.innerText = 'Error!';
+                    btn.classList.replace('btn-success', 'btn-danger');
+                    setTimeout(() => { btn.innerText = originalText; btn.classList.replace('btn-danger', 'btn-success'); }, 2000);
+                }
+            } catch(e) {
+                btn.innerText = 'Error!';
+                btn.classList.replace('btn-success', 'btn-danger');
+                setTimeout(() => { btn.innerText = originalText; btn.classList.replace('btn-danger', 'btn-success'); }, 2000);
+            }
         }
 
         async function buildUserWorkspace(userId, element) {
@@ -491,20 +547,24 @@
                 <div class="card mb-4">
                     <div class="card-header border-bottom border-secondary d-flex justify-content-between align-items-center">
                         Private Memory (Sensitive)
-                        <button class="btn btn-primary btn-sm" onclick="saveMemory('users', '${user.id}_private', 'mem-priv', this)">Save Private</button>
+                        <div id="btn-priv-${user.id}">
+                            <button class="btn btn-outline-light btn-sm" onclick="toggleEditMemory('mem-priv', 'btn-priv-${user.id}', 'users', '${user.id}_private')">Edit Memory</button>
+                        </div>
                     </div>
                     <div class="card-body p-0">
-                        <textarea id="mem-priv" class="memory-editor border-0" style="border-radius: 0 0 8px 8px;">${privMem}</textarea>
+                        <textarea id="mem-priv" class="memory-editor border-0" style="border-radius: 0 0 8px 8px; background-color: #121212;" readonly>${privMem}</textarea>
                     </div>
                 </div>
                 
                 <div class="card mb-4">
                     <div class="card-header border-bottom border-secondary d-flex justify-content-between align-items-center">
                         Public Memory (General Context)
-                        <button class="btn btn-primary btn-sm" onclick="saveMemory('users', '${user.id}_public', 'mem-pub', this)">Save Public</button>
+                        <div id="btn-pub-${user.id}">
+                            <button class="btn btn-outline-light btn-sm" onclick="toggleEditMemory('mem-pub', 'btn-pub-${user.id}', 'users', '${user.id}_public')">Edit Memory</button>
+                        </div>
                     </div>
                     <div class="card-body p-0">
-                        <textarea id="mem-pub" class="memory-editor border-0" style="border-radius: 0 0 8px 8px;">${pubMem}</textarea>
+                        <textarea id="mem-pub" class="memory-editor border-0" style="border-radius: 0 0 8px 8px; background-color: #121212;" readonly>${pubMem}</textarea>
                     </div>
                 </div>
             `;
@@ -553,10 +613,12 @@
                 <div class="card mb-4">
                     <div class="card-header border-bottom border-secondary d-flex justify-content-between align-items-center">
                         Endpoint Context Memory
-                        <button class="btn btn-primary btn-sm" onclick="saveMemory('endpoints', '${ep.extension}', 'mem-ep', this)">Save Memory</button>
+                        <div id="btn-ep-${ep.extension}">
+                            <button class="btn btn-outline-light btn-sm" onclick="toggleEditMemory('mem-ep', 'btn-ep-${ep.extension}', 'endpoints', '${ep.extension}')">Edit Memory</button>
+                        </div>
                     </div>
                     <div class="card-body p-0">
-                        <textarea id="mem-ep" class="memory-editor border-0" style="border-radius: 0 0 8px 8px;">${memData}</textarea>
+                        <textarea id="mem-ep" class="memory-editor border-0" style="border-radius: 0 0 8px 8px; background-color: #121212;" readonly>${memData}</textarea>
                     </div>
                 </div>
             `;

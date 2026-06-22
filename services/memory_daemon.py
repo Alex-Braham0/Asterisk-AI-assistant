@@ -31,10 +31,11 @@ CRITICAL DIRECTIVES:
 1. PRIORITIZE EXPLICIT REQUESTS: Execute any explicit add/remove requests made by the live agent in the call data.
 2. ANTI-AMNESIA: Retain all existing facts from the CURRENT PROFILES unless explicitly told to remove them or if new data directly contradicts them.
 3. CONTEXT EFFICIENCY (STRICT LIMIT): You MUST keep each profile string under 75 words. Use bullet points or highly condensed telegraphic phrasing. Do not write full paragraphs. The system context window is strictly limited.
-4. TAXONOMY ROUTING:
+4. TRANSIENT DATA BAN (CRITICAL): DO NOT store tasks, callbacks, scheduled events, tool executions, or temporary system states in ANY memory profile. Profiles are strictly for inherent, enduring facts about the human or location. Actively ignore transient actions like "User requested a callback on extension 6".
+5. TAXONOMY ROUTING:
     A. ENDPOINT PROFILE: Facts about the physical hardware, room, or location. (Current Device Type: {device_type})
-    B. PUBLIC USER PROFILE: Non-sensitive, permanent facts (Name, language, general preferences).
-    C. PRIVATE USER PROFILE: Sensitive facts (Medical, financial, passwords, exact schedules).
+    B. PUBLIC USER PROFILE: Non-sensitive, permanent facts (Name, language, general preferences, education).
+    C. PRIVATE USER PROFILE: Sensitive enduring facts (Medical, financial, passwords, permanent schedules).
 
 CURRENT PUBLIC USER:
 {pub_user_mem}
@@ -52,7 +53,6 @@ INSTRUCTIONS:
 First, use the `reasoning_scratchpad` to evaluate the new facts and determine which profile they belong to based on the taxonomy above.
 Then, output the fully updated memory strings.
 """
-        # FIX 1: Use native async Gemini SDK to prevent event loop crashes
         response = await self.client.aio.models.generate_content(
             model='gemini-3.1-flash-lite',
             contents=prompt,
