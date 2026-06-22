@@ -433,15 +433,15 @@
             
             const user = globalUsers.find(u => u.id === userId);
             
-            // Fetch memories
-            const pubRes = await fetch(`/api/memory/users/${userId}_public`);
+            // Append cache-busting timestamps to force fresh fetches
+            const timestamp = Date.now();
+            const pubRes = await fetch(`/api/memory/users/${userId}_public?t=${timestamp}`);
             const pubMem = (await pubRes.json()).content;
             
-            const privRes = await fetch(`/api/memory/users/${userId}_private`);
+            const privRes = await fetch(`/api/memory/users/${userId}_private?t=${timestamp}`);
             const privMem = (await privRes.json()).content;
 
-            // Fetch Routing Assignments
-            const aRes = await fetch(`/api/system/assignments/${userId}`);
+            const aRes = await fetch(`/api/system/assignments/${userId}?t=${timestamp}`);
             const assignments = await aRes.json();
             const assignedMap = {};
             assignments.forEach(a => assignedMap[a.extension] = a.is_default);
@@ -494,7 +494,7 @@
                         <button class="btn btn-primary btn-sm" onclick="saveMemory('users', '${user.id}_private', 'mem-priv', this)">Save Private</button>
                     </div>
                     <div class="card-body p-0">
-                        <textarea id="mem-priv" class="memory-editor border-0" style="border-radius: 0 0 8px 8px;">${pubMem ? privMem : ''}</textarea>
+                        <textarea id="mem-priv" class="memory-editor border-0" style="border-radius: 0 0 8px 8px;">${privMem}</textarea>
                     </div>
                 </div>
                 
@@ -518,7 +518,8 @@
             
             const ep = globalEndpoints.find(e => e.extension === ext);
             
-            const memRes = await fetch(`/api/memory/endpoints/${ext}`);
+            const timestamp = Date.now();
+            const memRes = await fetch(`/api/memory/endpoints/${ext}?t=${timestamp}`);
             const memData = (await memRes.json()).content;
             
             const typeOptions = ['STATIC_SHARED', 'STATIC_PRIVATE', 'MOBILE'].map(t => 

@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import asyncio
 import logging
@@ -6,20 +7,30 @@ import datetime
 from aiohttp import web, WSMsgType
 from collections import deque
 from pathlib import Path
-from ai.context_builder import ContextBuilder
 
 log_ring_buffer = deque(maxlen=500)
 active_websockets = set()
+_original_stdout = sys.stdout
 
-class DashboardLogHandler(logging.Handler):
-    def emit(self, record):
-        if record.name == 'aiohttp.access' or "GET /api/status" in record.getMessage() or "GET /api/system/health" in record.getMessage():
-            return
-        msg = self.format(record)
-        log_ring_buffer.append(msg)
-        for ws in list(active_websockets):
-            if not ws.closed:
-                asyncio.create_task(ws.send_str(msg))
+# Intercepts ALL terminal prints and routes them to the dashboard
+class DashboardStdoutCapture:
+    def write(self, text):
+        _original_stdout.write(text)
+        if text.strip() and "GET /api/" not in text:
+            msg = text.strip()
+            log_ring_buffer.append(msg)
+            try:
+                loop = asyncio.get_running_loop()
+                for ws in list(active_websockets):
+                    if not ws.closed:
+                        loop.create_task(ws.send_str(msg))
+            except RuntimeError:
+                pass # Event loop not running yet
+
+    def flush(self):
+        _original_stdout.flush()
+
+sys.stdout = DashboardStdoutCapture()
 
 class DashboardServer:
     def __init__(self, orchestrator, db):
@@ -76,6 +87,11 @@ class DashboardServer:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         active_websockets.add(ws)
+        
+        # Dump the history immediately upon UI connection
+        for msg in log_ring_buffer:
+            await ws.send_str(msg)
+            
         try:
             async for msg in ws: pass
         finally:
@@ -120,19 +136,13 @@ class DashboardServer:
         return web.json_response({"status": "success"})
 
     async def get_memory(self, request):
-        mem_type = request.match_info['type']
-        item_id = request.match_info['item_id']
-        content = ""
-        
-        async with self.db.pool.acquire() as conn:
-            if mem_type == 'users':
-                user_id, visibility = item_id.split('_')
-                column = "public_memory" if visibility == "public" else "private_memory"
-                content = await conn.fetchval(f"SELECT {column} FROM Users WHERE id = $1", int(user_id))
-            elif mem_type == 'endpoints':
-                content = await conn.fetchval("SELECT endpoint_memory FROM Endpoints WHERE extension = $1", item_id)
-                
-        return web.json_response({"content": content or ""})
+        file_path = self.base_dir / f"memory_files/{request.match_info['type']}/{request.match_info['item_id']}.md"
+        content = file_path.read_text() if file_path.exists() else ""
+        return web.json_response(
+            {"content": content},
+            # Force the browser to NEVER cache this API response
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"} 
+        )
 
     async def update_memory(self, request):
         mem_type = request.match_info['type']
