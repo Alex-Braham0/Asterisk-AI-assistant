@@ -118,6 +118,9 @@ class UpdateEndpointContext(BaseTool):
     }
 
     async def execute(self, session, args):
+        if type(session).__name__ == "HeadlessAgentSession":
+            return {"status": "failed", "internal_directive": "Background agents cannot update endpoint contexts."}
+
         query = "UPDATE Endpoints SET device_type = $1, physical_location = $2 WHERE extension = $3"
         async with session.db.pool.acquire() as conn:
             await conn.execute(query, args['device_type'], args['physical_location'], session.target_extension)

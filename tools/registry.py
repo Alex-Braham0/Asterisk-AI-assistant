@@ -12,10 +12,10 @@ class ToolRegistry:
         # Base tools available to ALL sessions
         registered_classes = [
             SubmitCallSummary, SetActiveUser, UpdateUserTimezone, 
-            TransferCall, SendDTMF, ExecuteOutboundDial, EndCall,
+            TransferCall, SendDTMF, EndCall, # <-- REMOVED ExecuteOutboundDial from here
             SearchDirectory, SearchUsers,
             RegisterNewUser, UpdateEndpointContext, ResolveAndSwitchUser,
-            CheckWeather, DelegateAutonomousTask  # <--- MOVED HERE
+            CheckWeather, DelegateAutonomousTask
         ]
         
         # Determine Session Type to prevent Tool Leakage
@@ -23,11 +23,11 @@ class ToolRegistry:
         
         if session_type == "HeadlessAgentSession":
             # Swarm tools ONLY
-            registered_classes.extend([MarkMissionComplete])
+            registered_classes.extend([MarkMissionComplete, ExecuteOutboundDial]) # <-- ADDED ExecuteOutboundDial here
         elif session_type == "CallSession":
             # Live human caller tools ONLY
-            pass # Removed DelegateAutonomousTask from here
-            
+            pass
+        
         self.tools = {cls.name: cls() for cls in registered_classes}
 
     def _check_auth(self, tool_instance):

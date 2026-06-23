@@ -15,13 +15,19 @@ class TransferCall(BaseTool):
     }
 
     async def execute(self, session, args):
+        if not session.engine.active_call:
+            return {"status": "failed", "message": "Cannot transfer: There is no active call."}
+
         target = args.get("target_extension")
         reason = args.get("reason", "No reason provided")
         try:
-            session.channel.transfer_call(target)
-            asyncio.create_task(session.trigger_summary(reason=f"Call transferred to {target}. Reason: {reason}"))
+            session.engine.ctrl.send_cmd("transfer", target)
+            if type(session).__name__ == "CallSession":
+                asyncio.create_task(session.trigger_summary(reason=f"Call transferred to {target}. Reason: {reason}"))
             return {"status": "success", "message": f"Transferring to {target} initiated."}
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"status": "failed", "message": f"Transfer failed: {e}"}
 
 class SendDTMF(BaseTool):
@@ -37,11 +43,16 @@ class SendDTMF(BaseTool):
     }
 
     async def execute(self, session, args):
+        if not session.engine.active_call:
+            return {"status": "failed", "message": "Cannot send DTMF: There is no active call."}
+
         digit = args.get("digit")
         try:
             session.channel.send_dtmf(digit)
             return {"status": "success", "message": f"Successfully pressed {digit}."}
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"status": "failed", "message": f"Failed to send DTMF: {e}"}
 
 class EndCall(BaseTool):
@@ -57,6 +68,12 @@ class EndCall(BaseTool):
 
     async def execute(self, session, args):
         await asyncio.sleep(0.5)
+
+        if not session.engine.active_call:
+            return {
+                "status": "failed", 
+                "internal_directive": "There is no active call to hang up. If you are a background agent and your mission is complete, use 'mark_mission_complete'."
+            }
         
         empty_cycles = 0
         max_wait_cycles = 150 
@@ -96,6 +113,13 @@ class ExecuteOutboundDial(BaseTool):
     }
 
     async def execute(self, session, args):
+
+        if type(session).__name__ == "CallSession":
+            return {
+                "status": "failed", 
+                "internal_directive": "CRITICAL ERROR: You are currently on a live phone call with a human. You cannot use 'execute_outbound_dial' right now as it will hijack the audio line. You MUST use the 'delegate_autonomous_task' tool to schedule a background mission to make this call."
+            }
+
         target = args.get("target_extension")
         
         # Force clear zombie engine state
