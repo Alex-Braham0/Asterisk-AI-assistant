@@ -5,6 +5,7 @@ import subprocess
 import time
 import sounddevice as sd
 from telephony.baresip_ctrl import BaresipController, BaresipCallInstance
+import sys
 
 class MediaEngine:
     def __init__(self, config, loop, on_inbound_callback):
@@ -26,7 +27,7 @@ class MediaEngine:
 
     def _init_virtual_cables(self):
         print("[MediaEngine] Initializing PulseAudio virtual cables...")
-        import subprocess
+        
         subprocess.run("pactl list short modules | grep null-sink | cut -f1 | xargs -L1 pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
         
         tx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], capture_output=True, text=True)
@@ -47,7 +48,6 @@ class MediaEngine:
         env["PULSE_SINK"] = "Baresip_Rx"            
         env["PULSE_SOURCE"] = "Baresip_Tx.monitor"  
 
-        import subprocess
         cmd = ["baresip"]
         self.baresip_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
@@ -55,7 +55,6 @@ class MediaEngine:
         if hasattr(self, '_baresip_watchdog'):
             self.main_loop.create_task(self._baresip_watchdog())
             
-        import time
         time.sleep(1)
         self.ctrl.start()
 
@@ -72,7 +71,7 @@ class MediaEngine:
                 
                 # Force kill the main Python process. 
                 # systemd will catch this and execute a clean application reboot.
-                import sys
+                
                 sys.exit(1)
                 
             await asyncio.sleep(1)
@@ -135,20 +134,19 @@ class MediaEngine:
     def make_outbound_call(self, target_extension: str):
         if self.active_call: 
             self.drop_call()
-            import time
+            # REMOVED: import time
             time.sleep(0.5)
             
         generated_id = f"out-singleton-{int(time.time())}"
         self.active_call = BaresipCallInstance(target_extension, target_extension, generated_id)
         
-        # FIX: Fire and forget via a background thread to prevent Baresip socket timeouts from gaslighting the AI
-        import threading
+        # REMOVED: import threading
         threading.Thread(target=self.ctrl.send_cmd, args=("dial", str(target_extension)), daemon=True).start()
         
         return self.active_call
 
     def drop_call(self):
-        import threading
+        # REMOVED: import threading
         threading.Thread(target=self.ctrl.send_cmd, args=("hangup",), daemon=True).start()
         
         # Forcefully clear the engine lock instantly so subsequent headless agents don't get blocked

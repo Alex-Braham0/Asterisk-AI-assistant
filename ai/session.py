@@ -4,6 +4,7 @@ import datetime
 from ai.gemini_socket import GeminiSocket
 from ai.context_builder import ContextBuilder
 from tools.registry import ToolRegistry
+import traceback
 
 class CallSession:
     def __init__(self, call, engine, config, db):
@@ -143,7 +144,6 @@ class CallSession:
         try:
             result = await self.tool_registry.execute_tool(name, args)
         except Exception as e:
-            import traceback
             traceback.print_exc() # Stop hiding crashes!
             result = {"error": "Internal System Error", "details": str(e), "status": "failed"}
         
@@ -251,7 +251,6 @@ class HeadlessAgentSession:
     # ADD THIS MISSING METHOD
     def spawn_managed_task(self, coro):
         """Spawns a background task and tracks it for safe teardown."""
-        import asyncio
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -263,7 +262,6 @@ class HeadlessAgentSession:
         try:
             result = await self.tool_registry.execute_tool(name, args)
         except Exception as e:
-            import traceback
             traceback.print_exc()  # Stop hiding crashes!
             result = {"error": str(e), "status": "failed"}
             
