@@ -320,12 +320,13 @@
                 const statusBadge = isPending ? 'bg-warning text-dark' : (m.status === 'completed' ? 'bg-success' : 'bg-danger');
                 
                 let contentHTML = isPending 
-                    ? `<textarea class="form-control bg-dark text-white border-secondary" id="dir-${m.id}" rows="2">${m.directive}</textarea>`
-                    : `<div class="text-info mb-1 fw-bold">Directive: ${m.directive}</div><div class="bg-dark p-2 rounded border border-secondary" style="font-size:12px; font-family:monospace; max-height: 150px; overflow-y: auto;">${m.final_report || 'No log output.'}</div>`;
+                    ? `<textarea class="form-control bg-dark text-white border-secondary" id="dir-${m.id}" rows="2">${m.mission_directive}</textarea>`
+                    : `<div class="text-info mb-1 fw-bold">Directive: ${m.mission_directive}</div><div class="bg-dark p-2 rounded border border-secondary" style="font-size:12px; font-family:monospace; max-height: 150px; overflow-y: auto;">${m.final_report || 'No log output.'}</div>`;
                     
+                // FIX: Added the Delete button to the actions layout
                 let actionHTML = isPending
-                    ? `<button class="btn btn-sm btn-outline-info me-2" onclick="previewMission(${m.id})">Dry Run</button><button class="btn btn-sm btn-outline-primary" onclick="updateMission(${m.id}, event)">Save</button>`
-                    : ``;
+                    ? `<button class="btn btn-sm btn-outline-info me-2" onclick="previewMission(${m.id})">Dry Run</button><button class="btn btn-sm btn-outline-primary me-2" onclick="updateMission(${m.id}, event)">Save</button><button class="btn btn-sm btn-outline-danger" onclick="deleteMission(${m.id})">Delete</button>`
+                    : `<button class="btn btn-sm btn-outline-danger" onclick="deleteMission(${m.id})">Delete</button>`;
 
                 tbody.innerHTML += `
                     <tr>
@@ -353,6 +354,15 @@
             const data = await res.json();
             document.getElementById('preview-content').innerText = data.prompt;
             new bootstrap.Modal(document.getElementById('previewModal')).show();
+        }
+
+        async function deleteMission(id) {
+            if (confirm('Are you sure you want to permanently delete this mission?')) {
+                const btn = event.target;
+                btn.innerText = 'Deleting...';
+                await fetch(`/api/missions/${id}`, { method: 'DELETE' });
+                loadMissions();
+            }
         }
 
         // --- User & Endpoint Management Tab ---

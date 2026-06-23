@@ -45,6 +45,7 @@ class DashboardServer:
         app.router.add_get('/api/calls', self.get_past_calls)
         app.router.add_get('/api/missions', self.get_missions)
         app.router.add_put('/api/missions/{id}', self.update_mission)
+        app.router.add_delete('/api/missions/{id}', self.delete_mission)
         
         # Memory Routes
         app.router.add_get('/api/memory/{type}/{item_id}', self.get_memory)
@@ -219,6 +220,12 @@ class DashboardServer:
         )
         
         return web.json_response({"prompt": prompt})
+    
+    async def delete_mission(self, request):
+        m_id = int(request.match_info['id'])
+        async with self.db.pool.acquire() as conn:
+            await conn.execute("DELETE FROM Autonomous_Missions WHERE id = $1", m_id)
+        return web.json_response({"status": "success"})
 
     # --- User & Endpoint Management Routes ---
     async def get_users_list(self, request):
