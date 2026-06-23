@@ -1,6 +1,6 @@
 from tools.system import SubmitCallSummary, SetActiveUser, UpdateUserTimezone, MarkMissionComplete
 from tools.telephony import TransferCall, SendDTMF, EndCall, ExecuteOutboundDial
-from tools.directory import SearchDirectory, SearchUsers
+from tools.directory import SearchDirectory, SearchUsers, GetFullDirectory
 from tools.scheduling import DelegateAutonomousTask
 from tools.external import CheckWeather
 from tools.identity import RegisterNewUser, UpdateEndpointContext, ResolveAndSwitchUser
@@ -9,25 +9,21 @@ class ToolRegistry:
     def __init__(self, session):
         self.session = session
         
-        # Base tools available to ALL sessions
+        # Shared Tools
         registered_classes = [
-            SubmitCallSummary, SetActiveUser, UpdateUserTimezone, 
-            TransferCall, SendDTMF, EndCall, # <-- REMOVED ExecuteOutboundDial from here
-            SearchDirectory, SearchUsers,
-            RegisterNewUser, UpdateEndpointContext, ResolveAndSwitchUser,
-            CheckWeather, DelegateAutonomousTask
+            SetActiveUser, UpdateUserTimezone, SendDTMF, EndCall,
+            SearchDirectory, SearchUsers, GetFullDirectory,
+            RegisterNewUser, ResolveAndSwitchUser,
+            CheckWeather, DelegateAutonomousTask 
         ]
         
-        # Determine Session Type to prevent Tool Leakage
         session_type = type(self.session).__name__
         
         if session_type == "HeadlessAgentSession":
-            # Swarm tools ONLY
-            registered_classes.extend([MarkMissionComplete, ExecuteOutboundDial]) # <-- ADDED ExecuteOutboundDial here
+            registered_classes.extend([MarkMissionComplete, ExecuteOutboundDial])
         elif session_type == "CallSession":
-            # Live human caller tools ONLY
-            pass
-        
+            registered_classes.extend([SubmitCallSummary, TransferCall, UpdateEndpointContext])
+            
         self.tools = {cls.name: cls() for cls in registered_classes}
 
     def _check_auth(self, tool_instance):

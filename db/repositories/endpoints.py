@@ -22,7 +22,6 @@ class EndpointRepository:
             LIMIT 1
         """
         async with self.pool.acquire() as conn:
-            # Pass search_name twice: once for the ILIKE wildcard, once for the exact extension match
             record = await conn.fetchrow(query, f"%{search_name}%", search_name)
             return dict(record) if record else None
 

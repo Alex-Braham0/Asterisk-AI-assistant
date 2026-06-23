@@ -137,11 +137,14 @@ class CallSession:
 
         self.terminate_bridge()
 
+    # UPDATE THIS METHOD
     async def _handle_tool_call(self, call_id, name, args):
         print(f"[CallSession] Tool Execution Requested: {name}({args})")
         try:
             result = await self.tool_registry.execute_tool(name, args)
         except Exception as e:
+            import traceback
+            traceback.print_exc() # Stop hiding crashes!
             result = {"error": "Internal System Error", "details": str(e), "status": "failed"}
         
         if result is not None and self.gemini_socket.is_connected:
@@ -245,11 +248,23 @@ class HeadlessAgentSession:
             
         return True
 
+    # ADD THIS MISSING METHOD
+    def spawn_managed_task(self, coro):
+        """Spawns a background task and tracks it for safe teardown."""
+        import asyncio
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    # UPDATE THIS METHOD
     async def _handle_tool_call(self, call_id, name, args):
         print(f"[HeadlessAgent] Tool Execution: {name}({args})")
         try:
             result = await self.tool_registry.execute_tool(name, args)
         except Exception as e:
+            import traceback
+            traceback.print_exc()  # Stop hiding crashes!
             result = {"error": str(e), "status": "failed"}
             
         if self.gemini_socket.is_connected:

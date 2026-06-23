@@ -68,9 +68,9 @@ class SubmitCallSummary(BaseTool):
             await asyncio.sleep(1.5)
             session.gemini_socket.is_connected = False
             
-            # FIX: Only command Baresip to hangup if the line is still active
-            if session.engine.active_call:
-                session.drop_call()
+            # FIX: Properly reference the engine to drop the call
+            if getattr(session.engine, 'active_call', None):
+                session.engine.drop_call() 
                 
             session.terminate_bridge()
             

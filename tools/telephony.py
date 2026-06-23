@@ -21,13 +21,15 @@ class TransferCall(BaseTool):
         target = args.get("target_extension")
         reason = args.get("reason", "No reason provided")
         try:
+            # Route through Baresip engine
             session.engine.ctrl.send_cmd("transfer", target)
+            
+            # Only trigger summaries for live CallSessions
             if type(session).__name__ == "CallSession":
                 asyncio.create_task(session.trigger_summary(reason=f"Call transferred to {target}. Reason: {reason}"))
+                
             return {"status": "success", "message": f"Transferring to {target} initiated."}
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             return {"status": "failed", "message": f"Transfer failed: {e}"}
 
 class SendDTMF(BaseTool):
@@ -48,11 +50,9 @@ class SendDTMF(BaseTool):
 
         digit = args.get("digit")
         try:
-            session.channel.send_dtmf(digit)
+            session.engine.ctrl.send_dtmf_udp(digit)
             return {"status": "success", "message": f"Successfully pressed {digit}."}
         except Exception as e:
-            import traceback
-            traceback.print_exc()
             return {"status": "failed", "message": f"Failed to send DTMF: {e}"}
 
 class EndCall(BaseTool):
@@ -61,46 +61,26 @@ class EndCall(BaseTool):
     auth_level = 0
     parameters = {
         "type": "OBJECT",
-        "properties": {
-            "reason": {"type": "STRING"}
-        }
+        "properties": {"reason": {"type": "STRING"}}
     }
 
     async def execute(self, session, args):
-        await asyncio.sleep(0.5)
-
-        if not session.engine.active_call:
+        if not getattr(session.engine, 'active_call', None):
             return {
                 "status": "failed", 
                 "internal_directive": "There is no active call to hang up. If you are a background agent and your mission is complete, use 'mark_mission_complete'."
             }
-        
-        empty_cycles = 0
-        max_wait_cycles = 150 
-        
-        for _ in range(max_wait_cycles):
-            with session.engine.tx_lock:
-                buffer_size = len(session.engine.tx_buffer)
-            
-            if buffer_size > 0:
-                empty_cycles = 0 
-            else:
-                empty_cycles += 1 
-            
-            if empty_cycles >= 10:
-                break
-                
-            await asyncio.sleep(0.1)
 
-        # Safely execute the drop command against the engine so Headless Agents can use it
-        session.engine.drop_call()
+        await asyncio.sleep(0.5)
+        # ... (Keep your existing tx_buffer empty cycles checking loop here) ...
         
+        session.engine.drop_call()
         if hasattr(session, 'call_dropped_event'):
             session.call_dropped_event.set() 
             
         return {
             "status": "success", 
-            "internal_directive": "Call dropped successfully. Evaluate your original mission directive. If you have follow-up calls to make, use 'execute_outbound_dial' now. If your mission is fully complete, use 'mark_mission_complete' to terminate your session."
+            "internal_directive": "Call dropped successfully. If you have follow-up calls to make, use 'execute_outbound_dial' now. If your mission is fully complete, use 'mark_mission_complete'."
         }
 
 class ExecuteOutboundDial(BaseTool):
@@ -113,16 +93,15 @@ class ExecuteOutboundDial(BaseTool):
     }
 
     async def execute(self, session, args):
-
+        # SAFETY LOCK: Prevent Live Agent from Hijacking
         if type(session).__name__ == "CallSession":
             return {
                 "status": "failed", 
-                "internal_directive": "CRITICAL ERROR: You are currently on a live phone call with a human. You cannot use 'execute_outbound_dial' right now as it will hijack the audio line. You MUST use the 'delegate_autonomous_task' tool to schedule a background mission to make this call."
+                "internal_directive": "CRITICAL ERROR: You are on a live call. Use 'delegate_autonomous_task' to schedule a background mission to make this call."
             }
 
         target = args.get("target_extension")
         
-        # Force clear zombie engine state
         session.engine.drop_call()
         await asyncio.sleep(0.5) 
         
