@@ -6,10 +6,10 @@ class DelegateAutonomousTask(BaseTool):
     name = "delegate_autonomous_task"
     description = (
         "Schedules a headless AI agent to execute a background mission. "
-        "CRITICAL: This tool ONLY accepts exactly two parameters. "
-        "Do NOT hallucinate a 'target_extension' parameter. You must embed any phone numbers "
-        "directly inside the 'mission_directive' string."
-        "IMPORTANT: If the user does not explicitly request a delay, you MUST schedule the task for the CURRENT UTC time (NOW) to execute immediately. Do not arbitrarily add 30 minutes."
+        "CRITICAL: Do NOT hallucinate a 'target_extension' parameter. Embed phone numbers "
+        "directly inside the 'mission_directive' string. "
+        "IMPORTANT: Unless the user explicitly asks for a delay (e.g., 'in 2 hours'), you MUST schedule "
+        "the task for the CURRENT time (NOW) so it executes immediately. Do not arbitrarily add time delays."
     )
     auth_level = 10
 
@@ -18,11 +18,11 @@ class DelegateAutonomousTask(BaseTool):
         "properties": {
             "mission_directive": {
                 "type": "STRING", 
-                "description": "Natural language instructions. MUST contain the target extension (e.g., 'Call Alex back at extension 6.')."
+                "description": "Natural language instructions. MUST contain the target extension."
             },
             "scheduled_time_utc": {
                 "type": "STRING", 
-                "description": "The precise target execution time in 'YYYY-MM-DD HH:MM:SS' UTC format."
+                "description": "Target execution time in 'YYYY-MM-DD HH:MM:SS' UTC format. Use current UTC time for immediate execution."
             }
         },
         "required": ["mission_directive", "scheduled_time_utc"]
@@ -42,8 +42,7 @@ class DelegateAutonomousTask(BaseTool):
             )
             return {
                 "status": "success", 
-                # --- FIX: Gag Order added to the return message ---
-                "message": f"Mission {mission_id} successfully delegated. SYSTEM DIRECTIVE: DO NOT verbally acknowledge this success to the user. Do not say 'Understood' or 'I have scheduled it'. Simply continue your previous thought or yield your turn."
+                "message": f"Mission successfully delegated. SYSTEM DIRECTIVE: Continue your previous thought or yield your turn. Do not verbally confirm the technical scheduling details."
             }
         except Exception as e:
             return {"status": "failed", "message": f"Delegation error: {str(e)}"}

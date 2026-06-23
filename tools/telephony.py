@@ -15,49 +15,50 @@ class TransferCall(BaseTool):
     }
 
     async def execute(self, session, args):
+        if type(session).__name__ != "CallSession":
+            return {"status": "failed", "internal_directive": "CRITICAL: Background agents cannot transfer calls. You must end the current call and dial the new target using execute_outbound_dial."}
+            
         if not session.engine.active_call:
             return {"status": "failed", "message": "Cannot transfer: There is no active call."}
 
         target = args.get("target_extension")
         reason = args.get("reason", "No reason provided")
         try:
-            # Route through Baresip engine
             session.engine.ctrl.send_cmd("transfer", target)
-            
-            # Only trigger summaries for live CallSessions
-            if type(session).__name__ == "CallSession":
-                asyncio.create_task(session.trigger_summary(reason=f"Call transferred to {target}. Reason: {reason}"))
-                
+            asyncio.create_task(session.trigger_summary(reason=f"Call transferred to {target}. Reason: {reason}"))
             return {"status": "success", "message": f"Transferring to {target} initiated."}
         except Exception as e:
             return {"status": "failed", "message": f"Transfer failed: {e}"}
 
 class SendDTMF(BaseTool):
     name = "send_dtmf"
-    description = "Presses a key on the phone's dialpad."
+    description = "Presses keys on the phone's dialpad. You can send multiple digits at once (e.g., '1234')."
     auth_level = 10
     parameters = {
         "type": "OBJECT",
         "properties": {
-            "digit": {"type": "STRING"}
+            "digits": {"type": "STRING", "description": "The string of numbers/characters to press on the dialpad."}
         },
-        "required": ["digit"]
+        "required": ["digits"]
     }
 
     async def execute(self, session, args):
         if not session.engine.active_call:
             return {"status": "failed", "message": "Cannot send DTMF: There is no active call."}
 
-        digit = args.get("digit")
+        digits = str(args.get("digits", "")).strip()
         try:
-            session.engine.ctrl.send_dtmf_udp(digit)
-            return {"status": "success", "message": f"Successfully pressed {digit}."}
+            # FIX: Loop through and send multiple digits with a slight delay so Asterisk registers them
+            for char in digits:
+                session.engine.ctrl.send_dtmf_udp(char)
+                await asyncio.sleep(0.2) 
+            return {"status": "success", "message": f"Successfully pressed {digits}."}
         except Exception as e:
             return {"status": "failed", "message": f"Failed to send DTMF: {e}"}
 
 class EndCall(BaseTool):
     name = "end_call"
-    description = "Hangs up the phone. Use this when the conversation is completely finished."
+    description = "Hangs up the phone. Use this ONLY when the conversation is completely finished and you have spoken your final goodbye."
     auth_level = 0
     parameters = {
         "type": "OBJECT",
@@ -68,15 +69,14 @@ class EndCall(BaseTool):
         if not getattr(session.engine, 'active_call', None):
             return {
                 "status": "failed", 
-                "internal_directive": "There is no active call to hang up. If you are a background agent and your mission is complete, use 'mark_mission_complete'."
+                "internal_directive": "There is no active call to hang up. If your background mission is complete, use 'mark_mission_complete'."
             }
 
-        # Wait until the AI's transmission buffer is completely empty
+        # FIX: Audio Buffer Drain - Wait for AI to finish talking before killing the SIP channel
         while len(session.engine.tx_buffer) > 0:
             await asyncio.sleep(0.1)
             
-        # Wait an additional 1.5 seconds to ensure Baresip/PulseAudio clears the final packets over the network
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.0) # Network packet clearance buffer
         
         session.engine.drop_call()
         if hasattr(session, 'call_dropped_event'):
@@ -84,7 +84,7 @@ class EndCall(BaseTool):
             
         return {
             "status": "success", 
-            "internal_directive": "Call dropped successfully. If you have follow-up calls to make, use 'execute_outbound_dial' now. If your mission is fully complete, use 'mark_mission_complete'."
+            "internal_directive": "Call dropped successfully."
         }
 
 class ExecuteOutboundDial(BaseTool):

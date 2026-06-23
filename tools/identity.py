@@ -30,11 +30,17 @@ class ResolveAndSwitchUser(BaseTool):
             async with session.db.pool.acquire() as conn:
                 user_id = await conn.fetchval(query, spoken_name)
         elif len(results) > 1:
-            # 3. Handle collision gracefully
-            return {
-                "status": "collision",
-                "internal_directive": f"Multiple users found matching '{spoken_name}'. Ask the caller a subtle identifying question (like their department or last name) to disambiguate."
-            }
+            # Handle collision gracefully based on session type
+            if type(session).__name__ == "HeadlessAgentSession":
+                return {
+                    "status": "failed",
+                    "internal_directive": f"Multiple users found matching '{spoken_name}'. Since you are on a background mission, you cannot blindly switch context. Proceed with your original mission context."
+                }
+            else:
+                return {
+                    "status": "collision",
+                    "internal_directive": f"Multiple users found matching '{spoken_name}'. Ask the caller a subtle identifying question (like their department or last name) to disambiguate."
+                }
         else:
             # 4. Exact match found
             user_id = results[0]['id']
