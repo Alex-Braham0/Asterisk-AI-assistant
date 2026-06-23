@@ -71,8 +71,12 @@ class EndCall(BaseTool):
                 "internal_directive": "There is no active call to hang up. If you are a background agent and your mission is complete, use 'mark_mission_complete'."
             }
 
-        await asyncio.sleep(0.5)
-        # ... (Keep your existing tx_buffer empty cycles checking loop here) ...
+        # Wait until the AI's transmission buffer is completely empty
+        while len(session.engine.tx_buffer) > 0:
+            await asyncio.sleep(0.1)
+            
+        # Wait an additional 1.5 seconds to ensure Baresip/PulseAudio clears the final packets over the network
+        await asyncio.sleep(1.5)
         
         session.engine.drop_call()
         if hasattr(session, 'call_dropped_event'):

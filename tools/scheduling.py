@@ -9,6 +9,7 @@ class DelegateAutonomousTask(BaseTool):
         "CRITICAL: This tool ONLY accepts exactly two parameters. "
         "Do NOT hallucinate a 'target_extension' parameter. You must embed any phone numbers "
         "directly inside the 'mission_directive' string."
+        "IMPORTANT: If the user does not explicitly request a delay, you MUST schedule the task for the CURRENT UTC time (NOW) to execute immediately. Do not arbitrarily add 30 minutes."
     )
     auth_level = 10
 
