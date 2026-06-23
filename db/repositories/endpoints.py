@@ -18,11 +18,12 @@ class EndpointRepository:
         query = """
             SELECT extension, display_name 
             FROM Endpoints 
-            WHERE display_name ILIKE $1 AND is_active = TRUE
+            WHERE (display_name ILIKE $1 OR extension = $2) AND is_active = TRUE
             LIMIT 1
         """
         async with self.pool.acquire() as conn:
-            record = await conn.fetchrow(query, f"%{search_name}%")
+            # Pass search_name twice: once for the ILIKE wildcard, once for the exact extension match
+            record = await conn.fetchrow(query, f"%{search_name}%", search_name)
             return dict(record) if record else None
 
     async def get_endpoint(self, extension: str) -> dict | None:

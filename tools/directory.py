@@ -1,33 +1,51 @@
 import json
 from tools.base import BaseTool
 
+class GetFullDirectory(BaseTool):
+    name = "get_full_directory"
+    description = "Retrieves a complete list of all physical hardware endpoints and their extension numbers. Use this when the user asks to hear all available connections."
+    auth_level = 10
+    parameters = {
+        "type": "OBJECT",
+        "properties": {} 
+    }
+
+    async def execute(self, session, args):
+        directory = await session.db.endpoints.get_full_directory()
+        return {"status": "success", "directory": directory}
+
+
 class SearchDirectory(BaseTool):
     name = "search_directory"
-    description = "Looks up physical hardware endpoints AND human user extensions (e.g., 'Living Room', 'Front Desk', or 'Alex'). Use this to find the target_extension required for dialing."
+    description = "Looks up a specific physical hardware endpoint or extension number (e.g., 'Living Room', 'Front Desk', or '16'). Use this to find the target_extension required for dialing."
     auth_level = 10
-
     parameters = {
         "type": "OBJECT",
         "properties": {
             "search_term": {
                 "type": "STRING", 
-                "description": "The name of the physical location or endpoint. Strip possessives."
+                "description": "The name of the location, or the exact extension number."
             }
-        }
+        },
+        "required": ["search_term"]
     }
 
     async def execute(self, session, args):
         search_term = args.get("search_term", "").strip()
-        
-        if not search_term:
-            directory = await session.db.endpoints.get_full_directory()
-            return {"status": "success", "directory": directory}
-            
         clean_target = search_term.lower().replace("'s", "").replace("room", "").strip()
+        
         result = await session.db.endpoints.lookup_extension(clean_target)
         
         if result:
             return {"status": "success", "data": result}
+            
+        # Smart fallback if the DB still misses a raw number
+        if clean_target.isdigit():
+            return {
+                "status": "failed", 
+                "message": f"Could not verify '{clean_target}' in the directory. However, if the human explicitly told you to call or transfer to extension {clean_target}, you may trust the human and proceed using {clean_target} as the target."
+            }
+            
         return {"status": "failed", "message": f"No physical endpoint found matching '{clean_target}'."}
 
 class SearchUsers(BaseTool):
