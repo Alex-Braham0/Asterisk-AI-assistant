@@ -83,7 +83,7 @@ class EndCall(BaseTool):
             
         return {
             "status": "success", 
-            "internal_directive": "Call dropped successfully. If you are a background agent, you MUST now use the 'mark_mission_complete' tool to terminate your session."
+            "internal_directive": "Call dropped successfully. Evaluate your original mission directive. If you have follow-up calls to make, use 'execute_outbound_dial' now. If your mission is fully complete, use 'mark_mission_complete' to terminate your session."
         }
 
 class ExecuteOutboundDial(BaseTool):
@@ -156,7 +156,7 @@ class ExecuteOutboundDial(BaseTool):
                 session.bridge_active = False
                 if session.gemini_socket and session.gemini_socket.is_connected:
                     await session.gemini_socket.send_system_event(
-                        "The human has hung up the phone. The call is disconnected. You must now use the mark_mission_complete tool."
+                        "The human has hung up the phone. The call is disconnected. Evaluate your original mission directive. If you need to make another call (like reporting back to the user), use 'execute_outbound_dial' again now. If your mission is fully complete, use 'mark_mission_complete'."
                     )
                     session.gemini_socket.pbx_inject_callback = lambda x: None
 

@@ -139,7 +139,8 @@ class ContextBuilder:
             "2. ASYNCHRONOUS DIALING: The `execute_outbound_dial` tool will return immediately while the phone is ringing. You MUST wait silently. Do not generate any spoken text until you receive the 'CALL CONNECTED' system event.\n"
             "3. THE CONVERSATION: When the call connects, you must converse naturally. Do not end the call immediately.\n"
             "4. ENDING THE CALL: Once the conversation reaches a natural conclusion, YOU must invoke the `end_call` tool to hang up the line.\n"
-            "5. COMPLETING THE MISSION: Only AFTER `end_call` has successfully executed, or if the human hangs up on you (notified via system event), you must invoke the `mark_mission_complete` tool to terminate your background session.\n"
-            "6. PARALLEL TOOL CALLING PROHIBITED: Never invoke multiple tools simultaneously. Issue one tool, wait for the JSON response, then issue the next.\n"
+            "5. MULTI-STEP MISSIONS: You are authorized to make multiple sequential phone calls in a single mission. If your directive requires calling Person A to get an answer, and then reporting back to Person B, simply wait for the first call to disconnect, then use `execute_outbound_dial` again to call the second person.\n"
+            "6. COMPLETING THE MISSION: Only AFTER all required calls are finished and the objective is fully met, invoke the `mark_mission_complete` tool to terminate your background session.\n"
+            "7. PARALLEL TOOL CALLING PROHIBITED: Never invoke multiple tools simultaneously. Issue one tool, wait for the JSON response, then issue the next.\n"
             "</strict_directives>"
         )

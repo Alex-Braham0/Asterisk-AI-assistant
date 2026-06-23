@@ -15,7 +15,7 @@ class ToolRegistry:
             TransferCall, SendDTMF, ExecuteOutboundDial, EndCall,
             SearchDirectory, SearchUsers,
             RegisterNewUser, UpdateEndpointContext, ResolveAndSwitchUser,
-            CheckWeather
+            CheckWeather, DelegateAutonomousTask  # <--- MOVED HERE
         ]
         
         # Determine Session Type to prevent Tool Leakage
@@ -26,8 +26,8 @@ class ToolRegistry:
             registered_classes.extend([MarkMissionComplete])
         elif session_type == "CallSession":
             # Live human caller tools ONLY
-            registered_classes.extend([EndCall, DelegateAutonomousTask])
-        
+            pass # Removed DelegateAutonomousTask from here
+            
         self.tools = {cls.name: cls() for cls in registered_classes}
 
     def _check_auth(self, tool_instance):
