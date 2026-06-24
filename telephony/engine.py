@@ -19,7 +19,7 @@ class MediaEngine:
         self.baresip_process = None
         self.active_call = None
         
-        self.pbx_to_ai_queue = asyncio.Queue()
+        self.pbx_to_ai_queue = asyncio.Queue(maxsize=100)
         self.tx_buffer = bytearray()
         self.tx_lock = threading.Lock()
         self.audio_thread = None
@@ -146,10 +146,13 @@ class MediaEngine:
         return self.active_call
 
     def drop_call(self):
-        # REMOVED: import threading
+        # 1. FORCE KILL the audio thread immediately. Do not wait for Baresip.
+        self._stop_audio_stream()
+        
+        # 2. Tell Baresip to drop the SIP leg
         threading.Thread(target=self.ctrl.send_cmd, args=("hangup",), daemon=True).start()
         
-        # Forcefully clear the engine lock instantly so subsequent headless agents don't get blocked
+        # 3. Forcefully clear the engine lock instantly so subsequent agents don't get blocked
         if self.active_call:
             self.main_loop.call_soon_threadsafe(self.active_call.ended_event.set)
             self.active_call = None
@@ -189,14 +192,11 @@ class MediaEngine:
                     outdata[:] = b'\x00' * req_bytes
                     
             if not ai_speaking:
-                try: 
-                    self.main_loop.call_soon_threadsafe(self.pbx_to_ai_queue.put_nowait, bytes(indata))
-                except asyncio.QueueFull: 
-                    pass
+                # FIX: Route the raw audio bytes through your _safe_enqueue method 
+                # so older frames are silently dropped if the queue gets backed up.
+                self.main_loop.call_soon_threadsafe(self._safe_enqueue, bytes(indata))
 
         try:
-            # Using device=None forces Python to use the OS default.
-            # Because we set the PULSE_SINK/SOURCE environment variables, the OS will perfectly steer it into our virtual cables.
             with sd.RawStream(samplerate=8000, blocksize=160, channels=1, dtype='int16', callback=callback, latency='low'):
                 while self._audio_running: time.sleep(0.1)
         except Exception as e:
