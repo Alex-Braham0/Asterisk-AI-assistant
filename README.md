@@ -1,106 +1,76 @@
-# 🤖 Asterisk AI Assistant (Smart Singleton Architecture)
+# Asterisk-AI-Assistant MVP Documentation
 
-An enterprise-grade, bidirectional voice AI assistant bridging **Asterisk / FreePBX** with the **Gemini 2.5 Flash Native Audio API**. 
+This document outlines the architecture, deployment, and configuration for the lean SIP-to-Gemini Live Audio Bridge MVP. The system operates as a single-concurrency orchestrator that intercepts SIP calls, routes raw PCM audio through virtual Linux audio cables, and maintains a low-latency bi-directional WebSocket stream with Google's Gemini AI.
 
-This system acts as a fully autonomous virtual employee. It answers inbound human calls in real-time with sub-second latency. When the phone lines are quiet, it spawns **Headless Background Agents** to autonomously execute multi-step database missions, query external APIs, and make outbound phone calls.
+## 1. System Architecture
 
----
+The application runs as an asynchronous Python loop orchestrating three distinct layers:
 
-## 🏗️ Architecture: The "Smart Singleton"
+1. **Telephony (C-Level):** Baresip acts as the SIP User Agent, locked to port 5060. It handles SIP signaling and RTP media with your PBX (FreePBX/Asterisk).
+2. **Audio Routing (OS-Level):** PulseAudio manages two virtual null-sinks (`Baresip_Tx`, `Baresip_Rx`). Python reads from and writes to these sinks via ALSA and `sounddevice`, implementing a 100ms Jitter Buffer to decouple network burstiness from hardware playback.
+3. **AI Engine (Network-Level):** A WebSocket connects to the Gemini Live API (`BidiGenerateContent`). It streams 8kHz base64 PCM audio up, and receives 24kHz audio down, decimating it to 8kHz on the fly for PBX compatibility.
 
-Due to the limitations of bare-metal Linux audio threading and PJSIP network collisions, this system utilizes a **Smart Singleton Line-Lock Architecture**. 
+## 2. Dependencies
 
-Instead of forcing concurrent overlapping SIP softphones (which causes port exhaustion and dropped ACKs), the application manages a single, hyper-stable `baresip` instance.
-* **The Traffic Cop:** The `SIPAgentOrchestrator` holds an `asyncio.Lock()` representing the physical SIP extension. 
-* **Inbound Priority:** Human callers always get priority. If a human calls, the orchestrator instantly answers the line and bridges the Gemini WebSocket.
-* **The Polite Swarm:** A `BackgroundScheduler` continuously polls PostgreSQL for scheduled missions. It will *only* spawn a `HeadlessAgentSession` if the line lock is currently free. 
-* **Integrated Memory Daemon:** The `DBMemoryDaemon` runs seamlessly as an asynchronous background task within the main loop, digesting call transcripts into condensed public and private vector-style profiles.
+The application requires specific OS-level packages to handle the headless audio routing and SIP termination.
 
-### Core Modules
-* **`telephony/engine.py`**: The OS-level wrapper. Dynamically allocates PulseAudio virtual cables (`Baresip_Tx` / `Baresip_Rx`), boots the Baresip subprocess, and uses `sounddevice` to pipe raw PCM audio into Python.
-* **`core/orchestrator.py`**: The state manager. Controls the Line Lock, manages FreePBX ringing events, and runs the background Swarm/Memory workers.
-* **`ai/session.py`**: The LLM bridge. Handles the Gemini 2.5 WebSocket connection, dynamic system prompting, identity resolution, and the multimodal audio uplink/downlink.
-* **`tools/registry.py`**: The dynamic toolset. Grants the AI access to identity management, directory search, outbound dialing, and external APIs (e.g., OpenWeatherMap).
+**System Requirements (Linux):**
 
----
+* `baresip` (v4.8.0+)
+* `pulseaudio` (Daemon must be enabled and allowed to run for the executing user)
+* `alsa-utils` and `libportaudio2` (Required by the Python `sounddevice` library)
 
-## 🛠️ Tech Stack
+**Python Virtual Environment (`requirements.txt`):**
 
-* **Language:** Python 3.10+ (Strict `asyncio`)
-* **Telephony Stack:** Asterisk / FreePBX -> Baresip (CLI User Agent)
-* **Audio Routing:** PulseAudio (`module-null-sink`), `sounddevice`
-* **AI Provider:** Google Gemini API (Multimodal Live WebSockets)
-* **Database:** PostgreSQL (with `asyncpg` for atomic row locking)
-* **Deployment:** `docker compose`
+```text
+websockets>=12.0
+sounddevice>=0.4.6
+numpy>=1.26.0
 
----
-
-## ⚙️ FreePBX / Asterisk Configuration
-
-**CRITICAL:** PJSIP caching will route calls into a blackhole if not configured exactly as follows.
-1. Navigate to **Applications -> Extensions** in FreePBX.
-2. Edit your AI's target extension (e.g., `1001`).
-3. Under the **Advanced** tab, configure the following:
-   * **Max Contacts:** `1` *(Prevents Ghost Port collisions)*
-   * **Remove Existing:** `Yes` *(Forces Asterisk to respect the Python script on reboot)*
-   * **Rewrite Contact:** `Yes` *(Fixes NAT/Local ephemeral port routing)*
-
----
-
-## 🚀 Installation & Setup
-
-**1. Clone & Environment Setup**
-```bash
-git clone [https://github.com/yourusername/asterisk-ai-assistant.git](https://github.com/yourusername/asterisk-ai-assistant.git)
-cd asterisk-ai-assistant
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
 ```
 
-**2. Database Initialization**
-Ensure PostgreSQL is running. The system will automatically execute schema migrations from `db/migrations.py` on boot, generating the `Users`, `Endpoints`, and `Autonomous_Missions` tables.
+## 3. Configuration
 
-**3. Configure Credentials**
-Create a `config.env` or update `config/settings.py` with your environment variables:
-```env
-GEMINI_API_KEY="AIzaSy..."
-DB_HOST="localhost"
-DB_USER="postgres"
-DB_PASS="password"
-DB_NAME="asterisk_ai"
-SIP_IP="192.168.1.200" # Your PBX IP
+The system relies on two separate configuration domains: the Python application config and the Baresip system config.
+
+### Application Configuration (`config.json`)
+
+The application requires a `config.json` file in the root directory.
+
+```json
+{
+    "gemini_api_key": "YOUR_GOOGLE_GEMINI_API_KEY",
+    "system_prompt": "You are a direct, concise voice assistant on a telephone call. Keep answers short and conversational."
+}
+
 ```
 
----
+### Baresip Configuration (`~/.baresip/config`)
 
-## 💻 Running the Application
+The Baresip process must be configured to use PulseAudio and allow TCP control. Ensure the following parameters are strictly set:
 
-### Option A: Manual Development Mode
-Run the main telephony engine and swarm manager:
-```bash
-source venv/bin/activate
-python main.py
-```
+* `sip_listen 0.0.0.0:5060` (Locks SIP to a static port so PBX registrations don't ghost).
+* `ctrl_tcp 127.0.0.1:5444` (Required for Python to send `/accept` and `/hangup` commands).
+* `audio_player pulse,Baresip_Rx`
+* `audio_source pulse,Baresip_Tx.monitor`
+* Ensure modules `ctrl_tcp.so`, `pulse.so`, and your codecs (`g711.so` / `PCMU`) are loaded.
 
-### Option B: Production Daemonization (`systemd`)
-For 24/7 uptime and automatic crash recovery, install the provided systemd services.
+## 4. Codebase Breakdown
 
-1. **Install Services**
-Copy the service configurations into systemd (modify user/paths as needed):
-```bash
-sudo cp systemd/asterisk-ai.service /etc/systemd/system/
+The MVP consists of four isolated files, removing all legacy database, background scheduling, and function-calling logic.
 
-2. **Enable & Start**
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable asterisk-ai.service
-sudo systemctl start asterisk-ai.service
-```
+* `main.py`: The launcher. Loads the `config.json` variables, validates the API key, initializes the asyncio event loop, and starts the Orchestrator.
+* `core/orchestrator.py`: The traffic cop. Enforces the `asyncio.Lock()` to ensure only one active call. It manages the connection lifecycle: answering the SIP call only *after* the Gemini WebSocket connects, handling graceful hangup events, and ensuring all tasks and buffers are purged on teardown.
+* `telephony/engine.py`: The media layer. It auto-heals crashed PulseAudio daemons, allocates the virtual cables, forcefully reboots Baresip zombie processes, and runs the `sounddevice` stream worker. It maintains the 100ms Jitter Buffer to prevent ALSA underruns.
+* `ai/gemini_socket.py`: The API bridge. Connects to Gemini's WebSocket. The `_uplink_loop` chunks 8kHz audio into base64 payloads. The `_downlink_loop` decimates incoming 24kHz audio (taking every 3rd sample) and catches `"turnComplete": True` events to allow for graceful system teardowns.
 
-3. **View Real-Time Logs**
-```bash
-sudo journalctl -fu asterisk-ai.service
-```
+## 5. Deployment & Execution
 
----
+To run the MVP:
+
+1. Ensure no other service is binding to UDP 5060 or TCP 5444.
+2. Activate your virtual environment: `source venv/bin/activate`
+3. Execute the launcher: `python main.py`
+
+The system will automatically slaughter existing Baresip instances, refresh the PulseAudio cables, and print `>>> [SYSTEM READY] Listening for inbound calls... <<<`.
+

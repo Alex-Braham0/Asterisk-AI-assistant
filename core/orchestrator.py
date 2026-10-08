@@ -1,81 +1,110 @@
 import asyncio
-from ai.session import CallSession
-from core.scheduler import BackgroundScheduler
-from core.state_manager import CallStateManager
-from db.connection import DatabaseConnection
 from telephony.engine import MediaEngine
-from services.memory_daemon import DBMemoryDaemon
+from ai.gemini_socket import GeminiSocket
 
 class SIPAgentOrchestrator:
-    def __init__(self, config, db: DatabaseConnection, loop: asyncio.AbstractEventLoop):
-        self.config = config
-        self.db = db
+    def __init__(self, api_key: str, system_prompt: str, loop: asyncio.AbstractEventLoop):
+        self.api_key = api_key
+        self.system_prompt = system_prompt
         self.loop = loop
-        self.state_manager = CallStateManager()
         
-        # THE TRAFFIC COP: Ensures only one session uses the phone line at a time
         self.line_lock = asyncio.Lock()
-        
-        self.engine = MediaEngine(self.config, self.loop, self._handle_inbound_call)
-        self.scheduler = BackgroundScheduler(self.config, self.db, self)
-
-        self.memory_daemon = DBMemoryDaemon(self.config, self.db)
+        self.engine = MediaEngine(config=None, loop=self.loop, on_inbound_callback=self._handle_inbound_call)
 
     def start(self) -> None:
-        print("\n--- Smart Singleton Swarm Online ---")
-
-        recovery_count = self.loop.run_until_complete(self.db.missions.recover_orphaned_missions())
-        if recovery_count > 0:
-            print(f"[System] Recovered {recovery_count} orphaned background missions from a previous crash.")
-
         self.engine.start()
-        self.loop.create_task(self.scheduler.run())
+        print("\n" + "="*50)
+        print(">>> [SYSTEM READY] Listening for inbound calls... <<<")
+        print("="*50 + "\n")
 
-        self.loop.create_task(self.memory_daemon.run())
-        
-        try:
-            self.loop.run_forever()
-        except KeyboardInterrupt:
-            self.engine.stop()
-            self.scheduler.stop()
-
-            self.loop.run_until_complete(self.db.disconnect())
-
-            self.loop.stop()
+    def stop(self) -> None:
+        self.engine.stop()
 
     def _handle_inbound_call(self, engine, call) -> None:
-        # If a human calls while the AI is executing a background mission, Baresip naturally rejects them.
-        # But if the lock is free, we claim it for the human instantly.
         if self.line_lock.locked():
-            print("[Orchestrator] Rejected inbound call. AI is currently executing a background mission.")
+            print("[Orchestrator] Call rejected: Line is currently busy.")
             engine.drop_call()
             return
             
-        future = asyncio.run_coroutine_threadsafe(self._process_inbound_call(engine, call), self.loop)
-        future.add_done_callback(lambda f: f.exception() and print(f"App Error: {f.exception()}"))
+        asyncio.run_coroutine_threadsafe(self._process_inbound_call(engine, call), self.loop)
 
     async def _process_inbound_call(self, engine, call) -> None:
         async with self.line_lock:
+            caller = call.request.headers['From']['caller']
+            print(f"\n[Orchestrator] 📞 Inbound call ringing from: {caller}")
+            
+            # 1. Connect to Gemini BEFORE answering the phone
+            gemini = GeminiSocket(
+                api_key=self.api_key,
+                system_prompt=self.system_prompt,
+                pbx_to_ai_queue=engine.pbx_to_ai_queue,
+                pbx_inject_callback=engine.inject_audio,
+                pbx_flush_callback=engine.flush_tx_buffer
+            )
+            
+            connected = await gemini.connect()
+            if not connected:
+                print("[Orchestrator] ❌ Failed to connect to Gemini. Dropping call.")
+                engine.drop_call()
+                return
+
+            # 2. Answer the SIP leg now that AI is ready
+            print("[Orchestrator] 🟢 Gemini connected. Answering SIP call...")
+            success = await engine.answer_call()
+            if not success:
+                print("[Orchestrator] ❌ Caller hung up before answer. Aborting.")
+                if gemini.ws:
+                    await gemini.ws.close()
+                return
+
+            await call.answered_event.wait()
+            print("[Orchestrator] 🎙️ Audio stream established.")
+
+            while not engine.pbx_to_ai_queue.empty():
+                try:
+                    engine.pbx_to_ai_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+            # 3. Monitor the call lifecycle
+            bridge_task = asyncio.create_task(
+                gemini.run_audio_bridge(on_disconnect_callback=engine.drop_call)
+            )
+            call_ended_task = asyncio.create_task(call.ended_event.wait())
+
             try:
-                session = CallSession(call, engine, self.config, self.db)
-                call_id = getattr(call, '_id', None)
-                
-                if call_id: await self.state_manager.register_session(call_id, session)
-                
-                connected = await session.setup_connection(direction="inbound")
-                if connected:
-                    try: 
-                        await session.run_bridge()
-                    finally: 
-                        if call_id: await self.state_manager.unregister_session(call_id)
+                done, pending = await asyncio.wait(
+                    [bridge_task, call_ended_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+
+                # 4. Handle Graceful Teardown vs Network Crash
+                if call_ended_task in done:
+                    print("[Orchestrator] 🔴 User hung up. Notifying Gemini...")
+                    await gemini.send_system_text("SYSTEM EVENT: The user has hung up the phone. Conclude your thoughts.")
+                    
+                    # Wait dynamically for Gemini to finish processing the hangup event
+                    await gemini.wait_for_turn_complete(timeout=5.0)
                 else:
-                    engine.drop_call()
-                    if call_id: await self.state_manager.unregister_session(call_id)
+                    print("[Orchestrator] ⚠️ Gemini WebSocket dropped unexpectedly. Terminating call.")
+
             finally:
-                # CRITICAL: Purge stale audio buffers before releasing the lock to the next caller
+                # 5. Total system flush
+                bridge_task.cancel()
+                call_ended_task.cancel()
+                engine.drop_call()
                 engine.flush_tx_buffer()
+                
                 while not engine.pbx_to_ai_queue.empty():
                     try:
                         engine.pbx_to_ai_queue.get_nowait()
                     except asyncio.QueueEmpty:
                         break
+                        
+                try:
+                    if gemini.ws and not gemini.ws.closed:
+                        await gemini.ws.close()
+                except Exception:
+                    pass # Silence standard WebSocket closure exceptions
+                    
+                print("[Orchestrator] 🛑 Session fully cleared. Line lock released.")

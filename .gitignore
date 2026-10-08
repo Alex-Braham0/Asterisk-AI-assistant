@@ -1,18 +1,5 @@
 # Configuration
 config.json
-CLAUDE.md
-
-# Databases and Storage
-pbx_core.db
-chroma_data/
-seed_test_db.py
-
-# Data Queues
-call_summaries/pending/*.json
-call_summaries/processed/*.json
-call_summaries/pending/*.error
-memory_files/users/*.md
-memory_files/endpoints/*.md
 
 # Debug and Audio Dumps
 *.raw

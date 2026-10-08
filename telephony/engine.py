@@ -24,19 +24,39 @@ class MediaEngine:
         self.audio_thread = None
         self._audio_running = False
 
+        self.is_buffering = True
+        self.JITTER_BUFFER_MIN = 1600
+
     def _init_virtual_cables(self):
-        print("[MediaEngine] Initializing PulseAudio virtual cables...")
-        subprocess.run("pactl list short modules | grep null-sink | cut -f1 | xargs -L1 pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
+        print("[MediaEngine] Checking PulseAudio virtual cables...")
         
-        tx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], capture_output=True, text=True)
-        rx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Rx", "sink_properties=device.description=Baresip_Rx"], capture_output=True, text=True)
+        def attempt_allocation():
+            subprocess.run("pactl list short modules | grep null-sink | cut -f1 | xargs -L1 pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
+            tx = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], capture_output=True, text=True)
+            rx = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Rx", "sink_properties=device.description=Baresip_Rx"], capture_output=True, text=True)
+            return tx, rx
+
+        tx_result, rx_result = attempt_allocation()
         
+        # Auto-heal PulseAudio if it is dead or unresponsive
         if tx_result.returncode != 0 or rx_result.returncode != 0:
-            raise RuntimeError(f"FATAL: PulseAudio cable allocation failed.\nTx Error: {tx_result.stderr}\nRx Error: {rx_result.stderr}")
+            print("[MediaEngine] PulseAudio daemon offline. Restarting audio server...")
+            subprocess.run(["pulseaudio", "-k"], stderr=subprocess.DEVNULL)
+            time.sleep(1)
+            subprocess.run(["pulseaudio", "--start"], stderr=subprocess.DEVNULL)
+            time.sleep(2)
+            import sounddevice as sd
+            sd._terminate()
+            sd._initialize()
+            
+            tx_result, rx_result = attempt_allocation()
+            if tx_result.returncode != 0 or rx_result.returncode != 0:
+                raise RuntimeError(f"FATAL: PulseAudio cable allocation failed after restart.\nTx: {tx_result.stderr}\nRx: {rx_result.stderr}")
+                
+        print("[MediaEngine] Audio virtual cables allocated successfully.")
 
     def start(self):
         self._init_virtual_cables()
-        print("[MediaEngine] Booting Singleton Baresip Engine...")
         
         os.environ["PULSE_SINK"] = "Baresip_Tx"
         os.environ["PULSE_SOURCE"] = "Baresip_Rx.monitor"
@@ -45,13 +65,12 @@ class MediaEngine:
         env["PULSE_SINK"] = "Baresip_Rx"            
         env["PULSE_SOURCE"] = "Baresip_Tx.monitor"  
 
-        # Kill any zombie instances first
-        subprocess.run(["pkill", "-x", "baresip"], stderr=subprocess.DEVNULL)
-        time.sleep(1)
+        subprocess.run(["pkill", "-9", "-x", "baresip"], stderr=subprocess.DEVNULL)
+        time.sleep(2)
 
         cmd = ["baresip"]
-        # stdout and stderr left visible for testing
-        self.baresip_process = subprocess.Popen(cmd, env=env)
+        # Mute Baresip's C-level stdout and stderr
+        self.baresip_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         if hasattr(self, '_baresip_watchdog'):
             self.main_loop.create_task(self._baresip_watchdog())
@@ -60,14 +79,28 @@ class MediaEngine:
         self.ctrl.start()
 
     async def _baresip_watchdog(self):
-        while self._audio_running or self.baresip_process:
+        while True:
             if self.baresip_process and self.baresip_process.poll() is not None:
                 exit_code = self.baresip_process.returncode
-                print(f"[FATAL] Baresip subprocess crashed unexpectedly (Exit Code: {exit_code}).")
+                print(f"\n[MediaEngine] ⚠️ Baresip terminated (Exit Code: {exit_code}). Initiating self-healing...")
                 
                 self.drop_call()
                 self._stop_audio_stream()
-                os._exit(1) # Reliably forces systemd to restart the app
+                self.ctrl.stop()
+                
+                subprocess.run(["pkill", "-9", "-x", "baresip"], stderr=subprocess.DEVNULL)
+                await asyncio.sleep(2) 
+                
+                env = os.environ.copy()
+                env["PULSE_SINK"] = "Baresip_Rx"            
+                env["PULSE_SOURCE"] = "Baresip_Tx.monitor"
+                
+                # Mute the rebooted instance as well
+                self.baresip_process = subprocess.Popen(["baresip"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                await asyncio.sleep(1)
+                self.ctrl.start()
+                print("[MediaEngine] ✅ Self-healing complete. Ready for calls.")
                 
             await asyncio.sleep(1)
 
@@ -82,12 +115,10 @@ class MediaEngine:
             try:
                 self.baresip_process.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
-                print("[MediaEngine] Baresip failed to terminate gracefully. Force killing.")
                 self.baresip_process.kill()
                 self.baresip_process.wait()
 
     def _handle_event(self, event: dict):
-        print(f"[RAW PYTHON EVENT] {event}")
         ev_type = event.get("type", "")
         call_id = event.get("id")
 
@@ -115,12 +146,8 @@ class MediaEngine:
 
     async def answer_call(self) -> bool:
         await asyncio.sleep(0.5)
-        
         if not self.active_call:
-            print("[MediaEngine] Aborting answer: Caller hung up before Gemini initialized.")
             return False
-        
-        # Offload blocking socket calls to executor to prevent freezing the event loop
         return await self.main_loop.run_in_executor(None, self.ctrl.send_cmd, "accept")
 
     def make_outbound_call(self, target_extension: str):
@@ -130,9 +157,7 @@ class MediaEngine:
             
         generated_id = f"out-singleton-{int(time.time())}"
         self.active_call = BaresipCallInstance(target_extension, target_extension, generated_id)
-        
         threading.Thread(target=self.ctrl.send_cmd, args=("dial", str(target_extension)), daemon=True).start()
-        
         return self.active_call
 
     def drop_call(self):
@@ -168,21 +193,31 @@ class MediaEngine:
     def _stream_worker(self):
         def callback(indata, outdata, frames, time_info, status):
             req_bytes = frames * 2  
-            ai_speaking = False
             
             with self.tx_lock:
+                # 1. Buffering State: Play silence until the Jitter Buffer is full
+                if self.is_buffering:
+                    if len(self.tx_buffer) >= self.JITTER_BUFFER_MIN:
+                        self.is_buffering = False
+                    else:
+                        outdata[:] = b'\x00' * req_bytes
+                        self.main_loop.call_soon_threadsafe(self._safe_enqueue, bytes(indata))
+                        return
+
+                # 2. Playback State: Jitter buffer is full, feed the hardware
                 if len(self.tx_buffer) >= req_bytes:
                     outdata[:] = self.tx_buffer[:req_bytes]
                     del self.tx_buffer[:req_bytes]
-                    ai_speaking = True
                 else:
+                    # 3. Starvation State: Network dropped entirely. Output silence and re-buffer
                     outdata[:] = b'\x00' * req_bytes
+                    self.is_buffering = True
                     
             self.main_loop.call_soon_threadsafe(self._safe_enqueue, bytes(indata))
 
         try:
-            with sd.RawStream(samplerate=8000, blocksize=160, channels=1, dtype='int16', callback=callback, latency=0.05):
-                while self._audio_running: time.sleep(0.1)
+            with sd.RawStream(samplerate=8000, blocksize=320, channels=1, dtype='int16', callback=callback, latency=0.2):
+                while self._audio_running: time.sleep(0.05)
         except Exception as e:
             print(f"[MediaEngine] Audio stream crash: {e}")
 
