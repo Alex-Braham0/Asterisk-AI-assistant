@@ -5,7 +5,6 @@ import subprocess
 import time
 import sounddevice as sd
 from telephony.baresip_ctrl import BaresipController, BaresipCallInstance
-import sys
 
 class MediaEngine:
     def __init__(self, config, loop, on_inbound_callback):
@@ -13,7 +12,7 @@ class MediaEngine:
         self.main_loop = loop
         self.on_inbound_callback = on_inbound_callback
         
-        self.ctrl_port = 4444
+        self.ctrl_port = 5444
         self.ctrl = BaresipController("127.0.0.1", self.ctrl_port, self._handle_event)
         
         self.baresip_process = None
@@ -27,7 +26,6 @@ class MediaEngine:
 
     def _init_virtual_cables(self):
         print("[MediaEngine] Initializing PulseAudio virtual cables...")
-        
         subprocess.run("pactl list short modules | grep null-sink | cut -f1 | xargs -L1 pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
         
         tx_result = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], capture_output=True, text=True)
@@ -40,7 +38,6 @@ class MediaEngine:
         self._init_virtual_cables()
         print("[MediaEngine] Booting Singleton Baresip Engine...")
         
-        # Original static routing
         os.environ["PULSE_SINK"] = "Baresip_Tx"
         os.environ["PULSE_SOURCE"] = "Baresip_Rx.monitor"
         
@@ -48,10 +45,14 @@ class MediaEngine:
         env["PULSE_SINK"] = "Baresip_Rx"            
         env["PULSE_SOURCE"] = "Baresip_Tx.monitor"  
 
+        # Kill any zombie instances first
+        subprocess.run(["pkill", "-x", "baresip"], stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
         cmd = ["baresip"]
-        self.baresip_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # stdout and stderr left visible for testing
+        self.baresip_process = subprocess.Popen(cmd, env=env)
         
-        # Keep the watchdog, it does not affect audio
         if hasattr(self, '_baresip_watchdog'):
             self.main_loop.create_task(self._baresip_watchdog())
             
@@ -59,20 +60,14 @@ class MediaEngine:
         self.ctrl.start()
 
     async def _baresip_watchdog(self):
-        """Polls the subprocess. If it dies, force systemd to restart the app."""
         while self._audio_running or self.baresip_process:
             if self.baresip_process and self.baresip_process.poll() is not None:
                 exit_code = self.baresip_process.returncode
                 print(f"[FATAL] Baresip subprocess crashed unexpectedly (Exit Code: {exit_code}).")
                 
-                # Flush state
                 self.drop_call()
                 self._stop_audio_stream()
-                
-                # Force kill the main Python process. 
-                # systemd will catch this and execute a clean application reboot.
-                
-                sys.exit(1)
+                os._exit(1) # Reliably forces systemd to restart the app
                 
             await asyncio.sleep(1)
 
@@ -85,7 +80,6 @@ class MediaEngine:
         if self.baresip_process:
             self.baresip_process.terminate()
             try:
-                # Wait up to 3 seconds for graceful shutdown
                 self.baresip_process.wait(timeout=3.0)
             except subprocess.TimeoutExpired:
                 print("[MediaEngine] Baresip failed to terminate gracefully. Force killing.")
@@ -93,11 +87,11 @@ class MediaEngine:
                 self.baresip_process.wait()
 
     def _handle_event(self, event: dict):
+        print(f"[RAW PYTHON EVENT] {event}")
         ev_type = event.get("type", "")
         call_id = event.get("id")
 
         if ev_type == "CALL_INCOMING":
-            # If the engine is busy (e.g., AI is on a background mission), drop the call instantly
             if self.active_call:
                 self.ctrl.send_cmd("hangup")
                 return
@@ -114,48 +108,41 @@ class MediaEngine:
 
         elif ev_type == "CALL_CLOSED":
             self._stop_audio_stream()
-            if self.active_call:
-                self.main_loop.call_soon_threadsafe(self.active_call.ended_event.set)
-                self.active_call = None
+            call_ref = self.active_call
+            self.active_call = None
+            if call_ref:
+                self.main_loop.call_soon_threadsafe(call_ref.ended_event.set)
 
     async def answer_call(self) -> bool:
-        # Give Baresip 500ms to stabilize the new SIP channel before commanding it to answer.
-        # This prevents the race condition when you hang up and call back immediately.
         await asyncio.sleep(0.5)
         
-        # Prevent blindly commanding Baresip if the caller hung up during the Gemini handshake
         if not self.active_call:
             print("[MediaEngine] Aborting answer: Caller hung up before Gemini initialized.")
             return False
         
-        # Return the True/False state directly from the BaresipController
-        return self.ctrl.send_cmd("accept")
+        # Offload blocking socket calls to executor to prevent freezing the event loop
+        return await self.main_loop.run_in_executor(None, self.ctrl.send_cmd, "accept")
 
     def make_outbound_call(self, target_extension: str):
         if self.active_call: 
             self.drop_call()
-            # REMOVED: import time
             time.sleep(0.5)
             
         generated_id = f"out-singleton-{int(time.time())}"
         self.active_call = BaresipCallInstance(target_extension, target_extension, generated_id)
         
-        # REMOVED: import threading
         threading.Thread(target=self.ctrl.send_cmd, args=("dial", str(target_extension)), daemon=True).start()
         
         return self.active_call
 
     def drop_call(self):
-        # 1. FORCE KILL the audio thread immediately. Do not wait for Baresip.
         self._stop_audio_stream()
-        
-        # 2. Tell Baresip to drop the SIP leg
         threading.Thread(target=self.ctrl.send_cmd, args=("hangup",), daemon=True).start()
         
-        # 3. Forcefully clear the engine lock instantly so subsequent agents don't get blocked
-        if self.active_call:
-            self.main_loop.call_soon_threadsafe(self.active_call.ended_event.set)
-            self.active_call = None
+        call_ref = self.active_call
+        self.active_call = None
+        if call_ref:
+            self.main_loop.call_soon_threadsafe(call_ref.ended_event.set)
 
     def flush_tx_buffer(self):
         with self.tx_lock: self.tx_buffer.clear()
@@ -191,24 +178,20 @@ class MediaEngine:
                 else:
                     outdata[:] = b'\x00' * req_bytes
                     
-            if not ai_speaking:
-                # FIX: Route the raw audio bytes through your _safe_enqueue method 
-                # so older frames are silently dropped if the queue gets backed up.
-                self.main_loop.call_soon_threadsafe(self._safe_enqueue, bytes(indata))
+            self.main_loop.call_soon_threadsafe(self._safe_enqueue, bytes(indata))
 
         try:
-            with sd.RawStream(samplerate=8000, blocksize=160, channels=1, dtype='int16', callback=callback, latency='low'):
+            with sd.RawStream(samplerate=8000, blocksize=160, channels=1, dtype='int16', callback=callback, latency=0.05):
                 while self._audio_running: time.sleep(0.1)
         except Exception as e:
             print(f"[MediaEngine] Audio stream crash: {e}")
 
     def _safe_enqueue(self, pcm_data: bytes):
-        """Executes safely INSIDE the asyncio event loop to manage queue capacity."""
         try:
             self.pbx_to_ai_queue.put_nowait(pcm_data)
         except asyncio.QueueFull:
             try:
-                self.pbx_to_ai_queue.get_nowait() # Discard the oldest 20ms frame
+                self.pbx_to_ai_queue.get_nowait() 
                 self.pbx_to_ai_queue.put_nowait(pcm_data)
             except asyncio.QueueEmpty:
                 pass

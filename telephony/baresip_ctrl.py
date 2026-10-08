@@ -29,6 +29,10 @@ class BaresipController:
         self.udp_port = 5555  
         self._is_running = False
         self.listener_thread = None
+        
+        # New: Track the active socket so we can reuse it
+        self.active_socket = None
+        self.socket_lock = threading.Lock()
 
     def start(self):
         self._is_running = True
@@ -45,28 +49,17 @@ class BaresipController:
         json_payload = json.dumps(payload)
         netstring_payload = f"{len(json_payload)}:{json_payload},"
 
-        max_retries = 3
-        for attempt in range(max_retries):
+        # Send the command down the existing listener socket instantly
+        with self.socket_lock:
+            if not self.active_socket:
+                print(f"[BaresipCtrl] Cannot send '{command}', socket is not connected.")
+                return False
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.settimeout(3.0) # Increased from 1.0 to 3.0 to allow PulseAudio allocation
-                    s.connect((self.ctrl_host, self.ctrl_port))
-                    s.sendall(netstring_payload.encode('utf-8'))
-                    response = s.recv(2048)
-                    if not response:
-                        time.sleep(0.2)
-                        continue
-                    return True
-            except socket.timeout:
-                print(f"[BaresipCtrl] Socket timeout waiting for Baresip to process '{command}'. Retrying...")
-                time.sleep(0.2)
+                self.active_socket.sendall(netstring_payload.encode('utf-8'))
+                return True
             except Exception as e:
-                if "Connection refused" not in str(e):
-                    print(f"[BaresipCtrl] Socket error during '{command}': {e}")
-                time.sleep(0.2)
-                
-        print(f"[BaresipCtrl] CRITICAL: Failed to send command '{command}' after {max_retries} attempts.")
-        return False
+                print(f"[BaresipCtrl] Socket error during '{command}': {e}")
+                return False
 
     def send_dtmf_udp(self, digit: str):
         clean_digit = str(digit).strip()[0]
@@ -77,36 +70,73 @@ class BaresipController:
         except Exception as e:
             print(f"[BaresipCtrl] Failed to send UDP DTMF: {e}")
 
+    def _safe_dispatch(self, event):
+        try:
+            self.event_callback(event)
+        except Exception as e:
+            print(f"[BaresipCtrl] Error during event callback execution: {e}")
+
     def _listener_loop(self):
-        time.sleep(2) 
         while self._is_running:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.connect((self.ctrl_host, self.ctrl_port))
+                s.settimeout(1.0)
+                
+                # Register the socket as active
+                with self.socket_lock:
+                    self.active_socket = s
+                    
+                print(f"[BaresipCtrl] Successfully connected to Baresip at {self.ctrl_host}:{self.ctrl_port}")
+                
                 buffer = ""
                 while self._is_running:
-                    data = s.recv(4096).decode('utf-8', errors='ignore')
-                    if not data: break
+                    try:
+                        data = s.recv(4096).decode('utf-8', errors='ignore')
+                    except socket.timeout:
+                        continue 
+                        
+                    if not data: 
+                        print("[BaresipCtrl] Connection closed by Baresip.")
+                        break 
+                    
                     buffer += data
                     while True:
-                        if not buffer or ":" not in buffer: break
+                        if not buffer or ":" not in buffer: 
+                            break
                         try:
                             len_str, remaining = buffer.split(":", 1)
                             length = int(len_str)
                         except ValueError:
-                            buffer = buffer[1:]
+                            next_colon = buffer.find(':', 1)
+                            if next_colon != -1:
+                                buffer = buffer[next_colon - 1:]
+                            else:
+                                buffer = ""
                             continue
-                        if len(remaining) < (length + 1): break
+                            
+                        if len(remaining) < (length + 1): 
+                            break
+                            
                         json_payload = remaining[:length]
                         buffer = remaining[length + 1:] 
+                        
                         try:
                             event = json.loads(json_payload)
                             if isinstance(event, dict):
-                                self.event_callback(event)
-                        except json.JSONDecodeError: continue
+                                threading.Thread(target=self._safe_dispatch, args=(event,), daemon=True).start()
+                        except json.JSONDecodeError: 
+                            continue
+                
+                # Deregister the socket if the connection drops
+                with self.socket_lock:
+                    self.active_socket = None        
                 s.close()
+                time.sleep(1) 
+                
             except Exception as e:
-                # Silence normal port-waiting errors
+                with self.socket_lock:
+                    self.active_socket = None
                 if "Connection refused" not in str(e):
-                    print(f"\n[BaresipCtrl] Socket Error on {self.ctrl_port}: {e}")
+                    print(f"[BaresipCtrl] Socket Error on {self.ctrl_port}: {e}")
                 time.sleep(1)
