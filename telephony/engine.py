@@ -78,6 +78,10 @@ class MediaEngine:
         time.sleep(1)
         self.ctrl.start()
 
+        # Only print ready if Baresip didn't instantly crash from a port conflict
+        if self.baresip_process.poll() is None:
+            self._print_ready()
+
     async def _baresip_watchdog(self):
         while True:
             if self.baresip_process and self.baresip_process.poll() is not None:
@@ -101,6 +105,7 @@ class MediaEngine:
                 await asyncio.sleep(1)
                 self.ctrl.start()
                 print("[MediaEngine] ✅ Self-healing complete. Ready for calls.")
+                self._print_ready()
                 
             await asyncio.sleep(1)
 
@@ -230,3 +235,8 @@ class MediaEngine:
                 self.pbx_to_ai_queue.put_nowait(pcm_data)
             except asyncio.QueueEmpty:
                 pass
+
+    def _print_ready(self):
+        print("\n" + "="*50)
+        print(">>> [SYSTEM READY] Listening for inbound calls... <<<")
+        print("="*50 + "\n")

@@ -13,9 +13,6 @@ class SIPAgentOrchestrator:
 
     def start(self) -> None:
         self.engine.start()
-        print("\n" + "="*50)
-        print(">>> [SYSTEM READY] Listening for inbound calls... <<<")
-        print("="*50 + "\n")
 
     def stop(self) -> None:
         self.engine.stop()
