@@ -144,10 +144,11 @@ class SIPAgentOrchestrator:
                 asyncio.create_task(
                     asyncio.to_thread(
                         self.state_mgr.save_call_history, 
-                        caller, 
-                        start_time, 
-                        end_time, 
-                        "completed"
+                        direction="inbound",          # NEW
+                        remote_identity=caller,       # NEW (Replaces caller_id)
+                        start_time=start_time, 
+                        end_time=end_time, 
+                        status="completed"
                     )
                 )
                 # ---------------------------------

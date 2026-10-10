@@ -38,8 +38,16 @@ def main():
         loop.run_forever()
     except KeyboardInterrupt:
         print("\n[System] Shutting down gracefully...")
+    finally:
         orchestrator.stop()
-        loop.stop()
+        
+        print("[System] Flushing PulseAudio daemon...")
+        subprocess.run(
+            ["systemctl", "--user", "restart", "pulseaudio.service"], 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
 
 if __name__ == "__main__":
     main()

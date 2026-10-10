@@ -4,21 +4,19 @@ This document details the multi-process architecture, state management, dependen
 
 ## 1. System Architecture
 
-To protect the strict real-time constraints of the SIP audio bridge, the system is split into two isolated processes communicating via Inter-Process Communication (IPC). If the web server crashes or experiences heavy load, it will not interrupt an active SIP-to-Gemini phone call.
+To protect the strict real-time constraints of the SIP audio bridge, the system is split into two isolated processes communicating via Inter-Process Communication (IPC).
 
 * **Asterisk-AI Engine (`main.py`):** Runs the Baresip audio loop, Python Global Interpreter Lock (GIL) management, and the Gemini WebSocket connection.
-* **Web Dashboard (`web/app.py`):** A FastAPI application serving a real-time HTML/JS status UI via WebSockets.
+* **Web Dashboard (`web/app.py`):** A modular FastAPI application serving a real-time HTML/JS status UI and REST API.
 
-### State Management (`core/state.py`)
+### State Management & IPC
 
-* **Live State (RAM Disk IPC):** The engine writes instantaneous state (`in_call`, `idle`, `caller_id`) to a JSON file in the Linux RAM disk (`/dev/shm/asterisk_ai_state.json`) using atomic file replacements (`os.replace`). The FastAPI server runs a single background task to poll this memory-backed file asynchronously, broadcasting updates to connected browser clients. This achieves ~0ms latency with zero disk I/O or network broker overhead.
-* **Call History (SQLite):** Completed calls are written to a persistent SQLite database located inside the project directory (`data/call_history.db`). The database is configured with Write-Ahead Logging (`PRAGMA journal_mode=WAL;`) and native driver timeouts (`timeout=5.0`) to prevent database locking collisions between the engine (writing) and the web dashboard (reading).
+* **Live State (RAM Disk IPC):** The engine writes instantaneous state (`in_call`, `idle`, `caller_id`) to a JSON file in the Linux RAM disk (`/dev/shm/asterisk_ai_state.json`) using atomic file replacements. The FastAPI server polls this asynchronously, achieving ~0ms latency with zero disk I/O.
+* **Call History (SQLAlchemy ORM):** Completed calls are written to a persistent SQLite database (`data/call_history.db`). The database is managed via SQLAlchemy with Write-Ahead Logging (`PRAGMA journal_mode=WAL`) and Foreign Key constraints enforced at the connection level.
 
 ## 2. Dependencies & OS Packages
 
 ### System Packages
-
-The system relies on Linux user-space audio services and standard build tools.
 
 ```bash
 sudo apt update
@@ -26,7 +24,7 @@ sudo apt install baresip pulseaudio alsa-utils libportaudio2 python3-pip python3
 
 ```
 
-### Python Requirements (`requirements.txt`)
+### Python Requirements
 
 ```text
 websockets>=12.0
@@ -34,36 +32,35 @@ sounddevice>=0.4.6
 numpy>=1.26.0
 fastapi>=0.103.0
 uvicorn[standard]>=0.23.2
+sqlalchemy>=2.0.0
+alembic>=1.12.0
+pydantic>=2.4.0
 
 ```
 
-*(Note: `uvicorn[standard]` is required over standard `uvicorn` to include the high-performance `httptools` and `websockets` C-extensions.)*
+## 3. Database Migrations (Alembic)
 
-## 3. Deployment & Systemd Configuration
+The database schema is strictly managed by **Alembic**. You must never modify the database using raw SQL or `create_all()`.
 
-Operating a PulseAudio-backed script headlessly via systemd requires explicit user lingering and environment variable passing.
+When you add new tables or columns to `core/database.py` (e.g., adding a transcripts table):
+
+1. Generate the migration script: `alembic revision --autogenerate -m "Added transcripts table"`
+2. Apply the migration to the database: `alembic upgrade head`
+
+## 4. Deployment & Systemd Configuration
+
+Operating a PulseAudio-backed script headlessly requires explicit user lingering and automated daemon cleanup to prevent file descriptor leaks (`-9993` errors).
 
 1. **Enable User Lingering:** Required for headless PulseAudio.
-Prevents the OS from terminating the user's PulseAudio daemon when SSH sessions disconnect.
-
 ```bash
 sudo loginctl enable-linger gemini
-
-```
-
-
-2. **Enable PulseAudio:** User-space service.
-Start the PulseAudio daemon mapped to the specific user.
-
-```bash
-systemctl --user daemon-reload
 systemctl --user enable --now pulseaudio.socket pulseaudio.service
 
 ```
 
 
-3. **Create Engine Service:** /etc/systemd/system/asterisk-ai.service.
-Deploy the core audio bridge. Ensure the `DB_PATH` points to a local `data/` directory.
+2. **Create Engine Service:** /etc/systemd/system/asterisk-ai.service.
+*Note the `ExecStopPost` directive—this guarantees PulseAudio resets if the Python script crashes, preventing lockouts.*
 
 ```ini
 [Unit]
@@ -82,6 +79,10 @@ Environment="PULSE_SERVER=unix:/run/user/1000/pulse/native"
 Environment="DB_PATH=/home/gemini/Asterisk-AI-assistant/data/call_history.db"
 Environment="STATE_FILE=/dev/shm/asterisk_ai_state.json"
 ExecStart=/home/gemini/Asterisk-AI-assistant/venv/bin/python -u main.py
+
+# CRITICAL: Clears orphaned PortAudio file descriptors on stop/crash
+ExecStopPost=/bin/sh -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart pulseaudio.service'
+
 StandardOutput=journal
 StandardError=journal
 Restart=always
@@ -93,9 +94,7 @@ WantedBy=multi-user.target
 ```
 
 
-4. **Create Web Service:** /etc/systemd/system/asterisk-ai-web.service.
-Deploy the FastAPI dashboard. Binding to `0.0.0.0` allows LAN access, while `127.0.0.1` restricts it to local or reverse-proxy access.
-
+3. **Create Web Service:** /etc/systemd/system/asterisk-ai-web.service.
 ```ini
 [Unit]
 Description=Asterisk AI Web Dashboard
@@ -118,38 +117,4 @@ WantedBy=multi-user.target
 
 ```
 
-
-5. **Start Services:**
-Reload the systemd daemon and activate both services.
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now asterisk-ai asterisk-ai-web
-
-```
-
-
-## 4. Manual Testing (SSH Environment)
-
-When testing via SSH without systemd, Linux does not automatically populate the audio environment variables. You must export them manually to prevent PulseAudio `Connection refused` or ALSA `-9993` errors.
-
-**Terminal 1 (Engine):**
-
-```bash
-export XDG_RUNTIME_DIR=/run/user/$(id -u)
-export PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native
-export DB_PATH=/home/gemini/Asterisk-AI-assistant/data/call_history.db
-export STATE_FILE=/dev/shm/asterisk_ai_state.json
-python -u main.py
-
-```
-
-**Terminal 2 (Web Server):**
-
-```bash
-export DB_PATH=/home/gemini/Asterisk-AI-assistant/data/call_history.db
-export STATE_FILE=/dev/shm/asterisk_ai_state.json
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
-
-```
 
