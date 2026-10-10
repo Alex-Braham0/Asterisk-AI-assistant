@@ -58,8 +58,16 @@ systemctl --user enable --now pulseaudio.socket pulseaudio.service
 
 ```
 
+2. **Raise PulseAudio File Descriptor Limit:**
+   Prevents PulseAudio from crashing with `-9993` I/O errors due to low default systemd limits (256 FDs).
+   ```bash
+   mkdir -p ~/.config/systemd/user/pulseaudio.service.d
+   echo -e "[Service]\nLimitNOFILE=65536" > ~/.config/systemd/user/pulseaudio.service.d/override.conf
+   systemctl --user daemon-reload
+   systemctl --user restart pulseaudio
 
-2. **Create Engine Service:** /etc/systemd/system/asterisk-ai.service.
+
+3. **Create Engine Service:** /etc/systemd/system/asterisk-ai.service.
 *Note the `ExecStopPost` directive—this guarantees PulseAudio resets if the Python script crashes, preventing lockouts.*
 
 ```ini
@@ -94,7 +102,7 @@ WantedBy=multi-user.target
 ```
 
 
-3. **Create Web Service:** /etc/systemd/system/asterisk-ai-web.service.
+4. **Create Web Service:** /etc/systemd/system/asterisk-ai-web.service.
 ```ini
 [Unit]
 Description=Asterisk AI Web Dashboard

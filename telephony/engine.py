@@ -31,7 +31,13 @@ class MediaEngine:
         print("[MediaEngine] Checking PulseAudio virtual cables...")
         
         def attempt_allocation():
-            subprocess.run("pactl list short modules | grep null-sink | cut -f1 | xargs -L1 pactl unload-module", shell=True, stderr=subprocess.DEVNULL)
+            # Robust Python-based cleanup (no fragile bash pipes)
+            out = subprocess.run(["pactl", "list", "short", "modules"], capture_output=True, text=True)
+            for line in out.stdout.splitlines():
+                if "null-sink" in line:
+                    mod_id = line.split()[0]
+                    subprocess.run(["pactl", "unload-module", mod_id], stderr=subprocess.DEVNULL)
+            
             tx = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], capture_output=True, text=True)
             rx = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Rx", "sink_properties=device.description=Baresip_Rx"], capture_output=True, text=True)
             return tx, rx

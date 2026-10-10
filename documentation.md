@@ -53,6 +53,8 @@ To add new API endpoints, create a new file in `web/routers/` (e.g., `tools.py`)
 When adding new API endpoints that read from SQLAlchemy, define them as synchronous functions (`def get_history():` instead of `async def get_history():`). FastAPI will automatically offload synchronous routes to a background `ThreadPoolExecutor`, protecting your WebSocket event loop from database I/O stalls.
 * **WebSocket Broadcasting:**
 Do not place file polling loops directly inside WebSocket connection endpoints (this causes an O(N) scaling trap). Always use a singleton `ConnectionManager` and a single background `lifespan` task (as seen in `routers/live.py`) to poll `/dev/shm` and broadcast to connected clients.
+* **WebSocket Trailing Slashes:**
+FastAPI does not redirect WebSockets across slash mismatches. Because `routers/live.py` uses `@router.websocket("/")` under `prefix="/ws"`, clients must connect strictly to `/ws/` (e.g., `ws://${location.host}/ws/`). Omitting the trailing slash results in an immediate `403 Forbidden` rejection by Uvicorn.
 
 #### `ai/gemini_socket.py` (The AI Capabilities)
 
