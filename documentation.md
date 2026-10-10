@@ -1,3 +1,7 @@
+Here is the updated documentation. All original warnings and constraints remain intact, but it now extensively covers the new multi-process architecture, IPC mechanisms, and the safe concurrency patterns we implemented for the web dashboard.
+
+---
+
 # Developer Expansion Guide: SIP-to-Gemini MVP
 
 This guide dictates exactly where to build new features and what underlying infrastructure must remain untouched to prevent regressions in audio latency, network stability, or concurrency locks.
@@ -18,16 +22,38 @@ These files manage highly sensitive timing loops and OS-level C-bindings. Modify
 
 ### 2. The "Extension" Zones (Where to Build)
 
-When adding features back into the system (databases, function calling, state management), confine your logic to these specific files.
+When adding features back into the system (databases, function calling, state management, UI dashboards), confine your logic to these specific files.
 
 #### `core/orchestrator.py` (The Integration Hub)
 
 This is your state machine. It is safe to add blocking or asynchronous tasks here, provided they happen *outside* the active audio bridge.
 
 * **Pre-Call Logic (Caller ID, DB Lookups):**
-Insert this right after `async with self.line_lock:` but *before* `gemini.connect()`. If you need to look up a user by their phone number in PostgreSQL to customize the `system_prompt`, do it here.
-* **Post-Call Logic (Saving Summaries):**
-Insert this in the `finally:` block, *after* the `engine.drop_call()` and socket closure. The line lock is still held, meaning the next caller will hear a busy signal until your DB saves are complete. If your DB saves take longer than a few milliseconds, push them to a background `asyncio.create_task()` so the lock releases instantly.
+Insert this right after `async with self.line_lock:` but *before* `gemini.connect()`. If you need to look up a user by their phone number in PostgreSQL to customize the `system_prompt`, do it here. When updating the UI state (via `state_mgr`), always wrap it in a `try/except` block to ensure UI failures do not drop the SIP call.
+* **Post-Call Logic (Saving Summaries & History):**
+Insert this in the `finally:` block, *after* the `engine.drop_call()` and socket closure. The line lock is still held, meaning the next caller will hear a busy signal until your DB saves are complete. **Crucial:** To prevent locking out the next caller, push database saves to a background thread using `asyncio.create_task(asyncio.to_thread(...))` so the `line_lock` releases instantly.
+
+#### `core/state.py` (State Management & IPC)
+
+This handles all database persistence and Inter-Process Communication (IPC) between the SIP engine and the Web Dashboard.
+
+* **Live State (RAM Disk IPC):**
+To protect the GIL and avoid network overhead, the UI state is passed via the Linux RAM disk (`/dev/shm/asterisk_ai_state.json`). When modifying state writes, you *must* use `tempfile.NamedTemporaryFile` with atomic file swaps (`os.replace`) to prevent the web server from reading partially written JSON.
+* **Call History (SQLite Persistence):**
+When modifying the database schema or adding new queries, you must strictly follow two rules:
+1. **Connection Closures:** The Python `sqlite3` context manager (`with conn:`) *only* handles transactions, it does *not* close the connection. You must wrap connections in `contextlib.closing` to prevent `EMFILE` (Too many open files) crashes.
+2. **Driver Locks:** Do not bypass Python's lock handler. Pass timeouts directly to the driver (`sqlite3.connect(..., timeout=5.0)`) and ensure WAL mode (`PRAGMA journal_mode=WAL;`) is active to allow concurrent reading by the web server and writing by the engine.
+
+
+
+#### `web/app.py` (The Web Dashboard)
+
+This FastAPI application runs in a completely isolated process to prevent web traffic from impacting audio processing.
+
+* **WebSocket Broadcasting:**
+Do not place file polling loops directly inside the WebSocket connection endpoints (this causes an O(N) scaling trap). Always use a singleton `ConnectionManager` and a single background `lifespan` task to poll `/dev/shm` and broadcast to connected clients.
+* **Event Loop Blocking:**
+When adding new API endpoints that read from SQLite, define them as synchronous functions (`def get_history():` instead of `async def get_history():`). FastAPI will automatically offload synchronous routes to a background `ThreadPoolExecutor`, protecting your WebSocket event loop from database I/O stalls.
 
 #### `ai/gemini_socket.py` (The AI Capabilities)
 

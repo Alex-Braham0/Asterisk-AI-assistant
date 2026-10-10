@@ -1,6 +1,8 @@
 import asyncio
+from datetime import datetime
 from telephony.engine import MediaEngine
 from ai.gemini_socket import GeminiSocket
+from core.state import StateManager
 
 class SIPAgentOrchestrator:
     def __init__(self, api_key: str, system_prompt: str, loop: asyncio.AbstractEventLoop):
@@ -9,6 +11,10 @@ class SIPAgentOrchestrator:
         self.loop = loop
         
         self.line_lock = asyncio.Lock()
+        
+        # Initialize the decoupled IPC/Database manager
+        self.state_mgr = StateManager()
+        
         self.engine = MediaEngine(config=None, loop=self.loop, on_inbound_callback=self._handle_inbound_call)
 
     def start(self) -> None:
@@ -27,8 +33,17 @@ class SIPAgentOrchestrator:
 
     async def _process_inbound_call(self, engine, call) -> None:
         async with self.line_lock:
+            start_time = datetime.utcnow()
             caller = call.request.headers['From']['caller']
             print(f"\n[Orchestrator] 📞 Inbound call ringing from: {caller}")
+            
+            # --- WEB DASHBOARD INTEGRATION ---
+            # 1. Update UI to "in_call" securely without blocking the audio loop
+            try:
+                await self.state_mgr.set_live_state(is_active=True, caller_id=caller)
+            except Exception as e:
+                print(f"[Orchestrator] ⚠️ UI STATE ERROR (Ignored): {e}")
+            # ---------------------------------
             
             # 1. Connect to Gemini BEFORE answering the phone
             gemini = GeminiSocket(
@@ -43,6 +58,11 @@ class SIPAgentOrchestrator:
             if not connected:
                 print("[Orchestrator] ❌ Failed to connect to Gemini. Dropping call.")
                 engine.drop_call()
+                # Ensure UI reverts if we fail early
+                try:
+                    await self.state_mgr.set_live_state(is_active=False)
+                except Exception:
+                    pass
                 return
 
             # 2. Answer the SIP leg now that AI is ready
@@ -52,6 +72,11 @@ class SIPAgentOrchestrator:
                 print("[Orchestrator] ❌ Caller hung up before answer. Aborting.")
                 if gemini.ws:
                     await gemini.ws.close()
+                # Ensure UI reverts if caller aborts
+                try:
+                    await self.state_mgr.set_live_state(is_active=False)
+                except Exception:
+                    pass
                 return
 
             await call.answered_event.wait()
@@ -86,6 +111,8 @@ class SIPAgentOrchestrator:
                     print("[Orchestrator] ⚠️ Gemini WebSocket dropped unexpectedly. Terminating call.")
 
             finally:
+                end_time = datetime.utcnow()
+                
                 # 5. Total system flush
                 bridge_task.cancel()
                 call_ended_task.cancel()
@@ -105,3 +132,22 @@ class SIPAgentOrchestrator:
                     pass # Silence standard WebSocket closure exceptions
                     
                 print("[Orchestrator] 🛑 Session fully cleared. Line lock released.")
+
+                # --- WEB DASHBOARD INTEGRATION ---
+                # 2. Revert UI to "idle" safely
+                try:
+                    await self.state_mgr.set_live_state(is_active=False)
+                except Exception as e:
+                    print(f"[Orchestrator] ⚠️ UI STATE ERROR (Ignored): {e}")
+                
+                # 3. Save DB History in the background so line_lock is released instantly
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        self.state_mgr.save_call_history, 
+                        caller, 
+                        start_time, 
+                        end_time, 
+                        "completed"
+                    )
+                )
+                # ---------------------------------
