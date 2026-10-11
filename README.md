@@ -1,110 +1,74 @@
-# Asterisk-AI-Assistant MVP
+# Asterisk-AI-Assistant MVP: Architecture & Deployment Guide
 
-A low-latency, resilient SIP-to-Gemini Live Audio Bridge. This system acts as a headless SIP endpoint that intercepts phone calls from a PBX (like FreePBX/Asterisk), routes the audio through PulseAudio virtual cables into Python, and streams it bi-directionally to the Google Gemini Live WebSocket API.
+This document details the multi-process architecture, state management, dependencies, and deployment procedures for the SIP-to-Gemini Live Audio Bridge.
 
-## 1. Prerequisites & Dependencies
+## 1. System Architecture
 
-The system relies on Linux user-space services. It must be run under a dedicated user account (e.g., `gemini`) and requires the following system packages:
+To protect the strict real-time constraints of the SIP audio bridge, the system is split into two isolated processes communicating via Inter-Process Communication (IPC).
+
+* **Asterisk-AI Engine (`main.py`):** Runs the Baresip audio loop, Python Global Interpreter Lock (GIL) management, and the Gemini WebSocket connection.
+* **Web Dashboard (`web/app.py`):** A modular FastAPI application serving a real-time HTML/JS status UI and REST API.
+
+### State Management & IPC
+
+* **Live State (RAM Disk IPC):** The engine writes instantaneous state (`in_call`, `idle`, `caller_id`) to a JSON file in the Linux RAM disk (`/dev/shm/asterisk_ai_state.json`) using atomic file replacements. The FastAPI server polls this asynchronously, achieving ~0ms latency with zero disk I/O.
+* **Call History (SQLAlchemy ORM):** Completed calls are written to a persistent SQLite database (`data/call_history.db`). The database is managed via SQLAlchemy with Write-Ahead Logging (`PRAGMA journal_mode=WAL`) and Foreign Key constraints enforced at the connection level.
+
+## 2. Dependencies & OS Packages
+
+### System Packages
 
 ```bash
 sudo apt update
-sudo apt install baresip pulseaudio alsa-utils libportaudio2 python3-pip python3-venv
+sudo apt install baresip pulseaudio alsa-utils libportaudio2 python3-pip python3-venv sqlite3
 
 ```
 
-**Python Requirements (`requirements.txt`):**
+### Python Requirements
 
 ```text
 websockets>=12.0
 sounddevice>=0.4.6
 numpy>=1.26.0
+fastapi>=0.103.0
+uvicorn[standard]>=0.23.2
+sqlalchemy>=2.0.0
+alembic>=1.12.0
+pydantic>=2.4.0
 
 ```
 
-## 2. OS & Audio Configuration (PulseAudio)
+## 3. Database Migrations (Alembic)
 
-To operate headlessly without a desktop environment, PulseAudio must be configured as a persistent background user service.
+The database schema is strictly managed by **Alembic**. You must never modify the database using raw SQL or `create_all()`.
 
-1. **Enable User Lingering:** Prevents the OS from killing the audio daemon when you disconnect from SSH.
+When you add new tables or columns to `core/database.py` (e.g., adding a transcripts table):
+
+1. Generate the migration script: `alembic revision --autogenerate -m "Added transcripts table"`
+2. Apply the migration to the database: `alembic upgrade head`
+
+## 4. Deployment & Systemd Configuration
+
+Operating a PulseAudio-backed script headlessly requires explicit user lingering and automated daemon cleanup to prevent file descriptor leaks (`-9993` errors).
+
+1. **Enable User Lingering:** Required for headless PulseAudio.
 ```bash
 sudo loginctl enable-linger gemini
+systemctl --user enable --now pulseaudio.socket pulseaudio.service
 
 ```
 
-
-2. **Disable PulseAudio Idle Timeout:** Prevent the daemon from suspending itself when no calls are active.
-```bash
-mkdir -p ~/.config/pulse
-echo "exit-idle-time = -1" > ~/.config/pulse/daemon.conf
-
-```
-
-
-3. **Enable the Systemd User Service:**
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now pulseaudio.service
-systemctl --user enable --now pulseaudio.socket
-
-```
+2. **Raise PulseAudio File Descriptor Limit:**
+   Prevents PulseAudio from crashing with `-9993` I/O errors due to low default systemd limits (256 FDs).
+   ```bash
+   mkdir -p ~/.config/systemd/user/pulseaudio.service.d
+   echo -e "[Service]\nLimitNOFILE=65536" > ~/.config/systemd/user/pulseaudio.service.d/override.conf
+   systemctl --user daemon-reload
+   systemctl --user restart pulseaudio
 
 
-
-## 3. Telephony Configuration (Baresip)
-
-Baresip must be strictly configured to bind to a static SIP port, accept TCP control commands from Python, and route audio through the PulseAudio virtual cables.
-
-### `~/.baresip/config`
-
-Ensure these specific lines are set or uncommented:
-
-```ini
-# SIP and Control Networking
-sip_listen        0.0.0.0:5060
-ctrl_tcp          127.0.0.1:5444
-
-# Audio Routing
-audio_player      pulse,Baresip_Rx
-audio_source      pulse,Baresip_Tx.monitor
-
-# Required Modules (Ensure these are uncommented in the module block)
-module            ctrl_tcp.so
-module            pulse.so
-module            g711.so
-module            stun.so
-module            turn.so
-module            ice.so
-
-```
-
-### `~/.baresip/accounts`
-
-Register your PBX extension here. Replace `1001`, `password`, and `192.168.1.200` with your PBX credentials.
-
-```text
-<sip:1001@192.168.1.200>;auth_pass=password;mediaenc=none
-
-```
-
-## 4. Application Configuration
-
-Create a `config.json` in the root directory of the project. This configures the network and API behavior.
-
-```json
-{
-    "gemini_api_key": "YOUR_GEMINI_API_KEY",
-    "system_prompt": "You are a direct, concise voice assistant on a telephone call. Keep answers short and conversational."
-}
-
-```
-
-(Note: Ensure all legacy database and API keys are removed from this file to keep the MVP lean, though standard SIP credentials like `username`, `password`, `sip_ip`, and `sip_port` can remain if utilized by other parts of your pipeline.)
-
-## 5. Deployment & Systemd Service
-
-To ensure the orchestrator starts on boot and restarts on failure, deploy it as a systemd service.
-
-Create the service file: `sudo nano /etc/systemd/system/asterisk-ai.service`
+3. **Create Engine Service:** /etc/systemd/system/asterisk-ai.service.
+*Note the `ExecStopPost` directive—this guarantees PulseAudio resets if the Python script crashes, preventing lockouts.*
 
 ```ini
 [Unit]
@@ -120,7 +84,13 @@ Environment="PYTHONUNBUFFERED=1"
 Environment="PATH=/home/gemini/Asterisk-AI-assistant/venv/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="XDG_RUNTIME_DIR=/run/user/1000"
 Environment="PULSE_SERVER=unix:/run/user/1000/pulse/native"
+Environment="DB_PATH=/home/gemini/Asterisk-AI-assistant/data/call_history.db"
+Environment="STATE_FILE=/dev/shm/asterisk_ai_state.json"
 ExecStart=/home/gemini/Asterisk-AI-assistant/venv/bin/python -u main.py
+
+# CRITICAL: Clears orphaned PortAudio file descriptors on stop/crash
+ExecStopPost=/bin/sh -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart pulseaudio.service'
+
 StandardOutput=journal
 StandardError=journal
 Restart=always
@@ -131,16 +101,28 @@ WantedBy=multi-user.target
 
 ```
 
-*(Note: Verify your user ID with `id -u gemini`. If it is not `1000`, adjust the `XDG_RUNTIME_DIR` and `PULSE_SERVER` variables accordingly).*
 
-### Enable and Start the Service
+4. **Create Web Service:** /etc/systemd/system/asterisk-ai-web.service.
+```ini
+[Unit]
+Description=Asterisk AI Web Dashboard
+After=network.target asterisk-ai.service
 
-```bash
-# Allow the gemini user to view service logs without sudo
-sudo usermod -aG systemd-journal gemini
+[Service]
+Type=simple
+User=gemini
+Group=gemini
+WorkingDirectory=/home/gemini/Asterisk-AI-assistant/web
+Environment="PATH=/home/gemini/Asterisk-AI-assistant/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="DB_PATH=/home/gemini/Asterisk-AI-assistant/data/call_history.db"
+Environment="STATE_FILE=/dev/shm/asterisk_ai_state.json"
+ExecStart=/home/gemini/Asterisk-AI-assistant/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
 
-sudo systemctl daemon-reload
-sudo systemctl enable --now asterisk-ai
-sudo journalctl -u asterisk-ai.service -f
+[Install]
+WantedBy=multi-user.target
 
 ```
+
+
