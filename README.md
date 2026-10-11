@@ -52,6 +52,7 @@ When you add new tables or columns to `core/database.py` (e.g., adding a transcr
 Operating a PulseAudio-backed script headlessly requires explicit user lingering and automated daemon cleanup to prevent file descriptor leaks (`-9993` errors).
 
 1. **Enable User Lingering:** Required for headless PulseAudio.
+
 ```bash
 sudo loginctl enable-linger gemini
 systemctl --user enable --now pulseaudio.socket pulseaudio.service
@@ -59,15 +60,26 @@ systemctl --user enable --now pulseaudio.socket pulseaudio.service
 ```
 
 2. **Raise PulseAudio File Descriptor Limit:**
-   Prevents PulseAudio from crashing with `-9993` I/O errors due to low default systemd limits (256 FDs).
-   ```bash
-   mkdir -p ~/.config/systemd/user/pulseaudio.service.d
-   echo -e "[Service]\nLimitNOFILE=65536" > ~/.config/systemd/user/pulseaudio.service.d/override.conf
-   systemctl --user daemon-reload
-   systemctl --user restart pulseaudio
+Prevents PulseAudio from crashing with `-9993` I/O errors due to low default systemd limits (256 FDs).
+```bash
+mkdir -p ~/.config/systemd/user/pulseaudio.service.d
+echo -e "[Service]\nLimitNOFILE=65536" > ~/.config/systemd/user/pulseaudio.service.d/override.conf
+systemctl --user daemon-reload
+systemctl --user restart pulseaudio
+
+```
 
 
-3. **Create Engine Service:** /etc/systemd/system/asterisk-ai.service.
+3. **Disable PulseAudio Idle Suspension (Critical for Persistent Stream):**
+Prevents PulseAudio from sleeping and severing the persistent PortAudio C-bindings, which causes `-9993` crashes on subsequent calls.
+```bash
+sudo sed -i 's/load-module module-suspend-on-idle/#load-module module-suspend-on-idle/g' /etc/pulse/default.pa
+systemctl --user restart pulseaudio
+
+```
+
+
+4. **Create Engine Service:** /etc/systemd/system/asterisk-ai.service.
 *Note the `ExecStopPost` directive—this guarantees PulseAudio resets if the Python script crashes, preventing lockouts.*
 
 ```ini
@@ -101,8 +113,8 @@ WantedBy=multi-user.target
 
 ```
 
+5. **Create Web Service:** /etc/systemd/system/asterisk-ai-web.service.
 
-4. **Create Web Service:** /etc/systemd/system/asterisk-ai-web.service.
 ```ini
 [Unit]
 Description=Asterisk AI Web Dashboard
@@ -124,5 +136,3 @@ RestartSec=3
 WantedBy=multi-user.target
 
 ```
-
-

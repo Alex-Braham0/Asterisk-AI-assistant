@@ -31,7 +31,6 @@ class MediaEngine:
         print("[MediaEngine] Checking PulseAudio virtual cables...")
         
         def attempt_allocation():
-            # Robust Python-based cleanup (no fragile bash pipes)
             out = subprocess.run(["pactl", "list", "short", "modules"], capture_output=True, text=True)
             for line in out.stdout.splitlines():
                 if "null-sink" in line:
@@ -44,14 +43,12 @@ class MediaEngine:
 
         tx_result, rx_result = attempt_allocation()
         
-        # Auto-heal PulseAudio if it is dead or unresponsive
         if tx_result.returncode != 0 or rx_result.returncode != 0:
             print("[MediaEngine] PulseAudio daemon offline. Restarting audio server...")
             subprocess.run(["pulseaudio", "-k"], stderr=subprocess.DEVNULL)
             time.sleep(1)
             subprocess.run(["pulseaudio", "--start"], stderr=subprocess.DEVNULL)
             time.sleep(2)
-            import sounddevice as sd
             sd._terminate()
             sd._initialize()
             
@@ -63,7 +60,13 @@ class MediaEngine:
 
     def start(self):
         self._init_virtual_cables()
+
+        # 1. Start the single, persistent hardware stream thread
+        self._audio_running = True
+        self.audio_thread = threading.Thread(target=self._stream_worker, daemon=True)
+        self.audio_thread.start()
         
+        # 2. Configure Baresip environment
         os.environ["PULSE_SINK"] = "Baresip_Tx"
         os.environ["PULSE_SOURCE"] = "Baresip_Rx.monitor"
         
@@ -75,7 +78,6 @@ class MediaEngine:
         time.sleep(2)
 
         cmd = ["baresip"]
-        # Mute Baresip's C-level stdout and stderr
         self.baresip_process = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         if hasattr(self, '_baresip_watchdog'):
@@ -84,7 +86,6 @@ class MediaEngine:
         time.sleep(1)
         self.ctrl.start()
 
-        # Only print ready if Baresip didn't instantly crash from a port conflict
         if self.baresip_process.poll() is None:
             self._print_ready()
 
@@ -95,7 +96,6 @@ class MediaEngine:
                 print(f"\n[MediaEngine] ⚠️ Baresip terminated (Exit Code: {exit_code}). Initiating self-healing...")
                 
                 self.drop_call()
-                self._stop_audio_stream()
                 self.ctrl.stop()
                 
                 subprocess.run(["pkill", "-9", "-x", "baresip"], stderr=subprocess.DEVNULL)
@@ -105,7 +105,6 @@ class MediaEngine:
                 env["PULSE_SINK"] = "Baresip_Rx"            
                 env["PULSE_SOURCE"] = "Baresip_Tx.monitor"
                 
-                # Mute the rebooted instance as well
                 self.baresip_process = subprocess.Popen(["baresip"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
                 await asyncio.sleep(1)
@@ -116,10 +115,13 @@ class MediaEngine:
             await asyncio.sleep(1)
 
     def stop(self):
+        self._audio_running = False
         if self.active_call: 
             self.drop_call()
         self.ctrl.stop()
-        self._stop_audio_stream()
+
+        if self.audio_thread: 
+            self.audio_thread.join(timeout=2.0)
         
         if self.baresip_process:
             self.baresip_process.terminate()
@@ -141,15 +143,27 @@ class MediaEngine:
             peer_uri = event.get("peeruri", "")
             peer_num = peer_uri.split("@")[0].replace("sip:", "")
             self.active_call = BaresipCallInstance(event.get("peerdisplayname", peer_num), peer_num, call_id)
+            self.active_call.is_answered = False  # Gate closed: ignore local ringing
             self.main_loop.call_soon_threadsafe(self.on_inbound_callback, self, self.active_call)
 
         elif ev_type == "CALL_ESTABLISHED":
             if self.active_call:
                 self.main_loop.call_soon_threadsafe(self.active_call.answered_event.set)
-                self._start_audio_stream()
+                
+                def ungate_mic():
+                    if self.active_call:
+                        self.active_call.is_answered = True
+                
+                self.main_loop.call_later(0.6, ungate_mic)
 
         elif ev_type == "CALL_CLOSED":
-            self._stop_audio_stream()
+            if self.active_call:
+                self.active_call.is_answered = False
+
+            with self.tx_lock:
+                self.tx_buffer.clear()
+                self.is_buffering = True
+                
             call_ref = self.active_call
             self.active_call = None
             if call_ref:
@@ -172,41 +186,36 @@ class MediaEngine:
         return self.active_call
 
     def drop_call(self):
-        self._stop_audio_stream()
+        # Do NOT terminate audio here — keep the stream running
         threading.Thread(target=self.ctrl.send_cmd, args=("hangup",), daemon=True).start()
         
+        with self.tx_lock:
+            self.tx_buffer.clear()
+            self.is_buffering = True
+
         call_ref = self.active_call
         self.active_call = None
         if call_ref:
             self.main_loop.call_soon_threadsafe(call_ref.ended_event.set)
 
     def flush_tx_buffer(self):
-        with self.tx_lock: self.tx_buffer.clear()
+        with self.tx_lock: 
+            self.tx_buffer.clear()
 
     def inject_audio(self, pcm_bytes: bytes):
-        with self.tx_lock: self.tx_buffer.extend(pcm_bytes)
-
-    def _start_audio_stream(self):
-        if self._audio_running: return
-        self._audio_running = True
-        
-        while not self.pbx_to_ai_queue.empty():
-            try: self.pbx_to_ai_queue.get_nowait()
-            except asyncio.QueueEmpty: break
-            
-        self.audio_thread = threading.Thread(target=self._stream_worker, daemon=True)
-        self.audio_thread.start()
-
-    def _stop_audio_stream(self):
-        self._audio_running = False
-        if self.audio_thread: self.audio_thread.join(timeout=1.0)
+        with self.tx_lock: 
+            self.tx_buffer.extend(pcm_bytes)
 
     def _stream_worker(self):
         def callback(indata, outdata, frames, time_info, status):
             req_bytes = frames * 2  
             
+            # THE GATE: If call is idle or not yet answered, output silence & discard mic
+            if not self.active_call or not getattr(self.active_call, 'is_answered', False):
+                outdata[:] = b'\x00' * req_bytes
+                return
+
             with self.tx_lock:
-                # 1. Buffering State: Play silence until the Jitter Buffer is full
                 if self.is_buffering:
                     if len(self.tx_buffer) >= self.JITTER_BUFFER_MIN:
                         self.is_buffering = False
@@ -215,12 +224,10 @@ class MediaEngine:
                         self.main_loop.call_soon_threadsafe(self._safe_enqueue, bytes(indata))
                         return
 
-                # 2. Playback State: Jitter buffer is full, feed the hardware
                 if len(self.tx_buffer) >= req_bytes:
                     outdata[:] = self.tx_buffer[:req_bytes]
                     del self.tx_buffer[:req_bytes]
                 else:
-                    # 3. Starvation State: Network dropped entirely. Output silence and re-buffer
                     outdata[:] = b'\x00' * req_bytes
                     self.is_buffering = True
                     
@@ -228,7 +235,8 @@ class MediaEngine:
 
         try:
             with sd.RawStream(samplerate=8000, blocksize=320, channels=1, dtype='int16', callback=callback, latency=0.2):
-                while self._audio_running: time.sleep(0.05)
+                while self._audio_running: 
+                    time.sleep(0.05)
         except Exception as e:
             print(f"[MediaEngine] Audio stream crash: {e}")
 
@@ -239,7 +247,7 @@ class MediaEngine:
             try:
                 self.pbx_to_ai_queue.get_nowait() 
                 self.pbx_to_ai_queue.put_nowait(pcm_data)
-            except asyncio.QueueEmpty:
+            except asyncio.QueueEmpty: 
                 pass
 
     def _print_ready(self):

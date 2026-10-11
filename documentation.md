@@ -8,9 +8,15 @@ These files manage highly sensitive timing loops and OS-level C-bindings. Modify
 
 * **`telephony/engine.py` (Strictly Off-Limits):**
 * **Why:** The `_stream_worker` runs a real-time hardware audio thread. Python's Global Interpreter Lock (GIL) is aggressively managed here. If you add database calls, heavy logging, or API requests inside this file, you will starve the hardware buffer and instantly cause audio clipping.
+* **Persistent Stream & Audio Gate:** To prevent `PaErrorCode -9993` crashes and file descriptor leaks, the audio hardware stream runs as a persistent singleton opened once at boot. It uses a software gate (`is_answered`) and a strict 600ms asynchronous delay upon the `CALL_ESTABLISHED` event to drain residual Baresip ringtones from the PulseAudio buffers before piping audio to Gemini. Altering this timing will cause the AI to hallucinate voices from the ringtone.
+* **PulseAudio OS Dependency:** This engine relies on PulseAudio remaining awake indefinitely. You must ensure `module-suspend-on-idle` is permanently disabled in the host's `/etc/pulse/default.pa`. If PulseAudio suspends the virtual sinks during idle periods, the persistent PortAudio stream will crash on the next inbound call.
 * **The Jitter Buffer:** The `1600` byte (100ms) threshold and the starvation logic (`outdata[:] = b'\x00' * req_bytes`) are mathematically tuned to Gemini's network pacing. Do not alter them.
 * **Deployment Architecture (Critical Flaw Warning):**
 * As noted in previous iterations, tying Baresip to host-level PulseAudio virtual sinks is not a scalable architecture. If you containerize this later using `docker compose`, mapping ALSA sockets into containers requires privileged access and breaks horizontal scaling (you cannot run two instances on the same host). Treat this engine as a temporary MVP bridge until you swap it for a true memory-based RTP library (like `aiortc`).
+
+
+
+
 
 ### 2. The "Extension" Zones (Where to Build)
 
