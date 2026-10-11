@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from web.routers import calls, live
@@ -15,6 +16,14 @@ async def lifespan(app: FastAPI):
     poller_task.cancel()
 
 app = FastAPI(lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, change "*" to your FreePBX IP
+    allow_credentials=True,
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 # Register the modular routers
 app.include_router(calls.router, prefix="/api/calls", tags=["calls"])
@@ -58,12 +67,11 @@ HTML_TEMPLATE = """
 
         async function loadHistory() {
             try {
-                const res = await fetch('/api/calls/'); // <--- Note the updated path!
+                const res = await fetch('/api/calls/');
                 const data = await res.json();
                 const list = document.getElementById("history");
                 list.innerHTML = "";
                 data.forEach(call => {
-                    // Compute duration safely in the frontend
                     let start = new Date(call.start_time);
                     let end = call.end_time ? new Date(call.end_time) : start;
                     let duration = Math.round((end - start) / 1000);

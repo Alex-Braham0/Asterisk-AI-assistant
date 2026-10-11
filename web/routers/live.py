@@ -11,6 +11,7 @@ router = APIRouter()
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
+        self.current_state: dict = {"status": "idle"}
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -46,6 +47,9 @@ async def poll_state_file():
                     with open(STATE_FILE, "r") as f:
                         state_data = f.read()
                     parsed_data = json.loads(state_data)
+
+                    manager.current_state = parsed_data
+
                     await manager.broadcast({"event": "state_change", "data": parsed_data})
                     last_mtime = current_mtime
         except Exception:
@@ -60,3 +64,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+@router.get("/state")
+async def get_current_state():
+    return manager.current_state

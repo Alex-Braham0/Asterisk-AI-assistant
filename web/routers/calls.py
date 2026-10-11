@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -15,9 +15,8 @@ def get_db():
         db.close()
 
 @router.get("/", response_model=List[CallResponse])
-def get_history(db: Session = Depends(get_db)):
+def get_history(limit: int = Query(50, le=50), db: Session = Depends(get_db)):
     try:
-        # Notice how simple this is now! Pydantic handles the serialization entirely.
-        return db.query(CallRecord).order_by(CallRecord.id.desc()).limit(50).all()
+        return db.query(CallRecord).order_by(CallRecord.id.desc()).limit(limit).all()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
