@@ -74,7 +74,7 @@ class GeminiSocket:
             on_disconnect_callback()
 
     async def _uplink_loop(self):
-        """Reads 8kHz audio from PBX, packs into 50ms frames, sends to Gemini."""
+        """Reads 8kHz audio from PBX, packs into 200ms frames, sends to Gemini."""
         audio_buffer = bytearray()
         
         while self.is_connected:
@@ -82,9 +82,9 @@ class GeminiSocket:
                 pcm_8k = await self.pbx_to_ai_queue.get() 
                 audio_buffer.extend(pcm_8k)
                 
-                while len(audio_buffer) >= 800:
-                    chunk_8k = bytes(audio_buffer[:800])
-                    del audio_buffer[:800]
+                while len(audio_buffer) >= 3200:
+                    chunk_8k = bytes(audio_buffer[:3200])
+                    del audio_buffer[:3200]
                     
                     b64_audio = base64.b64encode(chunk_8k).decode("utf-8")
                     msg = {

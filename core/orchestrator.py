@@ -82,12 +82,6 @@ class SIPAgentOrchestrator:
             await call.answered_event.wait()
             print("[Orchestrator] 🎙️ Audio stream established.")
 
-            while not engine.pbx_to_ai_queue.empty():
-                try:
-                    engine.pbx_to_ai_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
-
             # 3. Monitor the call lifecycle
             bridge_task = asyncio.create_task(
                 gemini.run_audio_bridge(on_disconnect_callback=engine.drop_call)

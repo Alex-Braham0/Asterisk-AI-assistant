@@ -4,6 +4,7 @@ import threading
 import subprocess
 import time
 import sounddevice as sd
+import numpy as np
 from telephony.baresip_ctrl import BaresipController, BaresipCallInstance
 
 class MediaEngine:
@@ -18,7 +19,7 @@ class MediaEngine:
         self.baresip_process = None
         self.active_call = None
         
-        self.pbx_to_ai_queue = asyncio.Queue(maxsize=100)
+        self.pbx_to_ai_queue = asyncio.Queue(maxsize=10)
         self.tx_buffer = bytearray()
         self.tx_lock = threading.Lock()
         self.audio_thread = None
@@ -27,39 +28,7 @@ class MediaEngine:
         self.is_buffering = True
         self.JITTER_BUFFER_MIN = 1600
 
-    def _init_virtual_cables(self):
-        print("[MediaEngine] Checking PulseAudio virtual cables...")
-        
-        def attempt_allocation():
-            out = subprocess.run(["pactl", "list", "short", "modules"], capture_output=True, text=True)
-            for line in out.stdout.splitlines():
-                if "null-sink" in line:
-                    mod_id = line.split()[0]
-                    subprocess.run(["pactl", "unload-module", mod_id], stderr=subprocess.DEVNULL)
-            
-            tx = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Tx", "sink_properties=device.description=Baresip_Tx"], capture_output=True, text=True)
-            rx = subprocess.run(["pactl", "load-module", "module-null-sink", "sink_name=Baresip_Rx", "sink_properties=device.description=Baresip_Rx"], capture_output=True, text=True)
-            return tx, rx
-
-        tx_result, rx_result = attempt_allocation()
-        
-        if tx_result.returncode != 0 or rx_result.returncode != 0:
-            print("[MediaEngine] PulseAudio daemon offline. Restarting audio server...")
-            subprocess.run(["pulseaudio", "-k"], stderr=subprocess.DEVNULL)
-            time.sleep(1)
-            subprocess.run(["pulseaudio", "--start"], stderr=subprocess.DEVNULL)
-            time.sleep(2)
-            sd._terminate()
-            sd._initialize()
-            
-            tx_result, rx_result = attempt_allocation()
-            if tx_result.returncode != 0 or rx_result.returncode != 0:
-                raise RuntimeError(f"FATAL: PulseAudio cable allocation failed after restart.\nTx: {tx_result.stderr}\nRx: {rx_result.stderr}")
-                
-        print("[MediaEngine] Audio virtual cables allocated successfully.")
-
     def start(self):
-        self._init_virtual_cables()
 
         # 1. Start the single, persistent hardware stream thread
         self._audio_running = True
@@ -215,6 +184,13 @@ class MediaEngine:
                 outdata[:] = b'\x00' * req_bytes
                 return
 
+            # THE NOISE GATE: Mute background SIP static so Gemini knows when to respond
+            mic_audio = np.frombuffer(indata, dtype=np.int16)
+            if np.abs(mic_audio).mean() < 50:  # If volume is below 50, it's just static
+                clean_mic = b'\x00' * req_bytes
+            else:
+                clean_mic = bytes(indata)
+
             with self.tx_lock:
                 if self.is_buffering:
                     if len(self.tx_buffer) >= self.JITTER_BUFFER_MIN:
@@ -234,7 +210,7 @@ class MediaEngine:
             self.main_loop.call_soon_threadsafe(self._safe_enqueue, bytes(indata))
 
         try:
-            with sd.RawStream(samplerate=8000, blocksize=320, channels=1, dtype='int16', callback=callback, latency=0.2):
+            with sd.RawStream(samplerate=8000, blocksize=320, channels=1, dtype='int16', callback=callback, latency='low'):
                 while self._audio_running: 
                     time.sleep(0.05)
         except Exception as e:
