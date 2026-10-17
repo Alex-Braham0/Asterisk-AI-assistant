@@ -1,32 +1,68 @@
 # Asterisk-AI-Assistant MVP: Architecture & Deployment Guide
-
-This document details the multi-process architecture, state management, dependencies, and deployment procedures for the SIP-to-Gemini Live Audio Bridge.
+An enterprise-grade, low-latency Audio Bridge connecting Asterisk/Baresip SIP telephony to Google's Gemini Live API (gemini-2.5-flash-native-audio-preview-12-2025 / gemini-3.8-live).
 
 ## 1. System Architecture
+The project uses a multi-process architecture communicating via Linux RAM Disk Inter-Process Communication (IPC) and SQLite Write-Ahead Logging (WAL).
 
-To protect the strict real-time constraints of the SIP audio bridge, the system is split into two isolated processes communicating via Inter-Process Communication (IPC).
+                      +-----------------------------------+
+                      |         Asterisk / PBX            |
+                      +-----------------------------------+
+                                        | (SIP / RTP)
+                                        v
+                      +-----------------------------------+
+                      |    Baresip (Control Socket 5444)  |
+                      +-----------------------------------+
+                                        | (PulseAudio Null Sinks)
+                                        v
+                      +-----------------------------------+
+                      |   Asterisk-AI Engine (main.py)    |
+                      |   - MediaEngine (Debounce/Fade)   |
+                      |   - GeminiSocket (WebSocket Bidi) |
+                      |   - Dynamic Tool Registry         |
+                      +-----------------------------------+
+                             /                     \
+      (Atomic RAM Disk IPC) /                       \ (Async SQLite WAL)
+                           v                         v
+       +-----------------------+         +-----------------------+
+       | /dev/shm/state.json   |         |  data/call_history.db |
+       +-----------------------+         +-----------------------+
+                   |                                 |
+                   +----------------+----------------+
+                                    |
+                                    v
+                      +-----------------------------------+
+                      |     FastAPI Dashboard & API       |
+                      |     (web/app.py - Port 8000)      |
+                      +-----------------------------------+
 
-* **Asterisk-AI Engine (`main.py`):** Runs the Baresip audio loop, Python Global Interpreter Lock (GIL) management, and the Gemini WebSocket connection.
-* **Web Dashboard (`web/app.py`):** A modular FastAPI application serving a real-time HTML/JS status UI and REST API.
+### Key Components
+**Media Engine (`telephony/engine.py`)**: Drives Baresip via control socket and processes raw PCM audio using `sounddevice` at 8kHz 16-bit mono. Implements strict PBX debounce delays, DC-offset stripping, and ambient audio fade-ups to stabilize Gemini's native server-side Voice Activity Detection (VAD).
 
-### State Management & IPC
+**AI Socket (`ai/gemini_socket.py`)**: Maintains persistent bidirectional WebSockets (`BidiGenerateContent`) with Google's Gemini Live API. Handles 24kHz to 8kHz audio resamplers, uplink flow control, turn-completion triggers, and tool response loops.
 
-* **Live State (RAM Disk IPC):** The engine writes instantaneous state (`in_call`, `idle`, `caller_id`) to a JSON file in the Linux RAM disk (`/dev/shm/asterisk_ai_state.json`) using atomic file replacements. The FastAPI server polls this asynchronously, achieving ~0ms latency with zero disk I/O.
-* **Call History (SQLAlchemy ORM):** Completed calls are written to a persistent SQLite database (`data/call_history.db`). The database is managed via SQLAlchemy with Write-Ahead Logging (`PRAGMA journal_mode=WAL`) and Foreign Key constraints enforced at the connection level.
+**Tool Registry (`ai/tools/registry.py`)**: Decorator-driven function registry that automatically compiles Pydantic schemas into OpenAPI declarations, handles context injection, enforces tool security restrictions, and queues post-turn PBX actions.
 
-## 2. Dependencies & OS Packages
+**Orchestrator (`core/orchestrator.py`)**: Single-line concurrency lock manager (`line_lock`), state router, prompt compiler, and post-turn action execution coordinator.
 
-### System Packages
+## 2. Integrated Tool Suite
+The system includes dynamic tools in `ai/tools/functions.py`:
+*   `get_current_time`: Returns current time and date formatted with UK timezone support.
+*   `get_weather`: Queries the Open-Meteo API for real-time temperature, wind speed, and weather conditions.
+*   `transfer_call`: Queues a Baresip SIP REFER transfer to a given extension or user alias, executing safely after audio buffers drain.
+*   `toggle_hold`: Sends hold or resume SIP commands to Baresip.
+*   `end_call`: Queues a Baresip SIP hangup command, executing safely after speaker audio buffers drain.
+*   `call_summary` (restricted=True): SYSTEM ONLY tool. Generates structured JSON call summaries and transcripts saved directly to `data/summaries/`. Locked from unauthorized AI execution during active calls.
 
+## 3. Dependencies & OS Package Setup
+**System Packages**
 ```bash
 sudo apt update
-sudo apt install baresip pulseaudio alsa-utils libportaudio2 python3-pip python3-venv sqlite3
+sudo apt install -y baresip pulseaudio alsa-utils libportaudio2 python3-pip python3-venv sqlite3
+Python Environment (requirements.txt)
 
-```
+Plaintext
 
-### Python Requirements
 
-```text
 websockets>=12.0
 sounddevice>=0.4.6
 numpy>=1.26.0
@@ -35,56 +71,73 @@ uvicorn[standard]>=0.23.2
 sqlalchemy>=2.0.0
 alembic>=1.12.0
 pydantic>=2.4.0
+requests>=2.31.0
+4. Database Migrations (Alembic)
+The SQLite database (data/call_history.db) is managed via Alembic.
 
-```
+Generate a migration script after modifying models in core/database.py:
 
-## 3. Database Migrations (Alembic)
+Bash
 
-The database schema is strictly managed by **Alembic**. You must never modify the database using raw SQL or `create_all()`.
 
-When you add new tables or columns to `core/database.py` (e.g., adding a transcripts table):
+alembic revision --autogenerate -m "Add new schema fields"
+Apply migrations:
 
-1. Generate the migration script: `alembic revision --autogenerate -m "Added transcripts table"`
-2. Apply the migration to the database: `alembic upgrade head`
+Bash
 
-## 4. Deployment & Systemd Configuration
 
-Operating a PulseAudio-backed script headlessly requires explicit user lingering and automated daemon cleanup to prevent file descriptor leaks (`-9993` errors).
+alembic upgrade head
+5. OS & Audio Configuration (Critical Setup)
+Step 1: PulseAudio User Service & Lingering
 
-1. **Enable User Lingering:** Required for headless PulseAudio.
+Bash
 
-```bash
+
 sudo loginctl enable-linger gemini
 systemctl --user enable --now pulseaudio.socket pulseaudio.service
+Step 2: Raise Systemd File Descriptor Limits
 
-```
+Bash
 
-2. **Raise PulseAudio File Descriptor Limit:**
-Prevents PulseAudio from crashing with `-9993` I/O errors due to low default systemd limits (256 FDs).
-```bash
+
 mkdir -p ~/.config/systemd/user/pulseaudio.service.d
 echo -e "[Service]\nLimitNOFILE=65536" > ~/.config/systemd/user/pulseaudio.service.d/override.conf
 systemctl --user daemon-reload
 systemctl --user restart pulseaudio
+Step 3: Lock Static 8kHz Audio Sinks in /etc/pulse/default.pa
 
-```
+Bash
 
 
-3. **Disable PulseAudio Idle Suspension (Critical for Persistent Stream):**
-Prevents PulseAudio from sleeping and severing the persistent PortAudio C-bindings, which causes `-9993` crashes on subsequent calls.
-```bash
+# Disable idle module suspension
 sudo sed -i 's/load-module module-suspend-on-idle/#load-module module-suspend-on-idle/g' /etc/pulse/default.pa
+
+# Append static 8000Hz null-sinks
+sudo bash -c 'cat <<EOT>> /etc/pulse/default.pa
+
+# Static Asterisk-AI Virtual Sinks (Locked at 8000Hz Mono)
+load-module module-null-sink sink_name=Baresip_Tx format=s16le rate=8000 channels=1 sink_properties=device.description="Baresip_Tx"
+load-module module-null-sink sink_name=Baresip_Rx format=s16le rate=8000 channels=1 sink_properties=device.description="Baresip_Rx"
+EOT'
+
 systemctl --user restart pulseaudio
+Step 4: Disable Baresip Ringtone Modules
+To prevent Baresip alert sounds from leaking into audio streams:
 
-```
+Bash
 
 
-4. **Create Engine Service:** /etc/systemd/system/asterisk-ai.service.
-*Note the `ExecStopPost` directive—this guarantees PulseAudio resets if the Python script crashes, preventing lockouts.*
+baresip -t 1 & sleep 1; pkill -9 -x baresip
+sed -i '/ring\.so/s/^/#/' ~/.baresip/config
+sed -i '/ringback\.so/s/^/#/' ~/.baresip/config
+6. Systemd Services Setup
+Engine Service (/etc/systemd/system/asterisk-ai.service)
 
-```ini
+Ini, TOML
+
+
 [Unit]
-Description=Asterisk AI Assistant (Smart Singleton)
+Description=Asterisk AI Assistant Engine
 After=network.target sound.target
 
 [Service]
@@ -99,10 +152,7 @@ Environment="PULSE_SERVER=unix:/run/user/1000/pulse/native"
 Environment="DB_PATH=/home/gemini/Asterisk-AI-assistant/data/call_history.db"
 Environment="STATE_FILE=/dev/shm/asterisk_ai_state.json"
 ExecStart=/home/gemini/Asterisk-AI-assistant/venv/bin/python -u main.py
-
-# CRITICAL: Clears orphaned PortAudio file descriptors on stop/crash
 ExecStopPost=/bin/sh -c 'XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart pulseaudio.service'
-
 StandardOutput=journal
 StandardError=journal
 Restart=always
@@ -110,12 +160,11 @@ RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
+Web Dashboard Service (/etc/systemd/system/asterisk-ai-web.service)
 
-```
+Ini, TOML
 
-5. **Create Web Service:** /etc/systemd/system/asterisk-ai-web.service.
 
-```ini
 [Unit]
 Description=Asterisk AI Web Dashboard
 After=network.target asterisk-ai.service
@@ -134,5 +183,10 @@ RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
+Enable and Launch
 
-```
+Bash
+
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now asterisk-ai.service asterisk-ai-web.service
